@@ -15,6 +15,8 @@ import pickle
 
 from scipy.integrate import odeint
 
+from wrapperflybyslibrary import flybyslibrary
+
 try:
     from matplotlib import pyplot
     HAS_MATPLOTLIB = True
@@ -51,7 +53,8 @@ def parse_arguments():
     parser.add_argument("--mxstep",                         type=int,       dest="mxstep",                      default=1000000,        help="Maximum number of internal steps taken in the ODE integration. Increase if ODE integrator give mstep errors. ")    
     parser.add_argument("--theta_bin",                      type=float,     dest="theta_bin",                   default=1.0,            help="Initial binary true anomaly (3-body integration only)")
     parser.add_argument("--fraction_theta_0",               type=float,     dest="fraction_theta_0",            default=0.9,            help="Initial perturber true anomaly (3-body only), expressed as a fraction of -\arccos(-1/e_per). Default=0.9; increase if 3-body integrations do not seem converged. ")
-    parser.add_argument("--G",                              type=float,     dest="G",                           default=1.0,            help="Gravitational constant used in 3-body integrations. Should not affect results. ")
+    parser.add_argument("--G",                              type=float,     dest="G",                           default=4.0*np.pi**2,   help="Gravitational constant used in 3-body integrations. Should not affect Newtonian results. ")
+    parser.add_argument("--c",                              type=float,     dest="c",                           default=63239.72638679138, help="Speed of light. ")
     parser.add_argument("--fontsize",                       type=float,     dest="fontsize",                    default=22,             help="Fontsize for plots")
     parser.add_argument("--labelsize",                      type=float,     dest="labelsize",                   default=16,             help="Labelsize for plots")
 
@@ -63,7 +66,9 @@ def parse_arguments():
     add_bool_arg(parser, 'show',                            default=True,           help="Show plots")
     add_bool_arg(parser, 'include_quadrupole_terms',        default=True,           help="Include quadrupole-order terms")
     add_bool_arg(parser, 'include_octupole_terms',          default=False,          help="include octupole-order terms")
+    add_bool_arg(parser, 'include_1PN_terms',               default=False,          help="include octupole-order terms")
     add_bool_arg(parser, 'do_nbody',                        default=False,          help="Do 3-body integrations as well as SA")
+    add_bool_arg(parser, 'use_c',                           default=False,          help="Do 3-body integrations as well as SA")
     
     args = parser.parse_args()
                
@@ -118,6 +123,28 @@ def RHS_function(RHR_vec, theta, *ODE_args):
         djx_dtheta += djx_dtheta_oct
         djy_dtheta += djy_dtheta_oct
         djz_dtheta += djz_dtheta_oct
+
+
+    if args.include_1PN_terms == True:
+        e_vec = np.array([ex,ey,ez])
+        j_vec = np.array([jx,jy,jz])
+        q_vec = np.cross(j_vec,e_vec)
+        q_vec_hat = q_vec/np.linalg.norm(q_vec)
+
+        a_per = args.Q/(e_per-1.0)
+        n_per = np.sqrt(args.G*(args.m+args.M_per)/(a_per**3))
+        dt_dtheta = (1.0/n_per)*pow(e_per**2-1.0,3.0/2.0)*1.0/( (1.0 + e_per*np.cos(theta))**2 )
+        dt_dtheta2 = np.sqrt( (1.0+e_per)**3.0*args.Q**3/(args.G*(args.m+args.M_per)) )*1.0/( (1.0 + e_per*np.cos(theta))**2 )
+        n_bin = np.sqrt( args.G*args.m/(args.a**3) )
+        print 'n_bin',n_bin ,'dt_dtheta',dt_dtheta,dt_dtheta2
+        rg = args.G*args.m/(args.c**2)
+        
+        domega_dt_1PN = n_bin*(rg/args.a)*3.0/(jx**2+jy**2+jz**2)
+        de_dtheta = np.linalg.norm(e_vec)*dt_dtheta*domega_dt_1PN*q_vec_hat
+        print 'de_dtheta',de_dtheta,dex_dtheta
+        dex_dtheta += de_dtheta[0]
+        dey_dtheta += de_dtheta[1]
+        dez_dtheta += de_dtheta[2]
         
     RHR_vec_dot = [dex_dtheta,dey_dtheta,dez_dtheta,djx_dtheta,djy_dtheta,djz_dtheta]
 
@@ -562,12 +589,17 @@ def fourier_series_ej(lmax,theta,eps_SA,e_per,ex0,ey0,ez0,jx0,jy0,jz0):
 def compute_eps_SA(m,M_per,a_div_Q,e_per):
     return (M_per/np.sqrt(m*(m+M_per)))*pow(a_div_Q,3.0/2.0)*pow(1.0 + e_per,-3.0/2.0)
     
+def compute_Q_div_a_from_eps_SA(eps_SA,m,M_per,e_per):
+    return pow(eps_SA,-2.0/3.0)*pow( M_per**2/(m*(m+M_per)),1.0/3.0)*(1.0/(1.0+e_per))
+    
 def compute_eps_oct(m1,m2,m,a_div_Q,e_per):
     return a_div_Q*np.fabs(m1-m2)/((1.0+e_per)*m)
     
-def compute_DA_prediction(args,eps_SA,e_per,ex,ey,ez,jx,jy,jz):
-    
-    Delta_e = (5*eps_SA*(np.sqrt(1 - e_per**(-2))*((1 + 2*e_per**2)*ey*ez*jx + (1 - 4*e_per**2)*ex*ez*jy + 2*(-1 + e_per**2)*ex*ey*jz) + 3*e_per*ez*(ey*jx - ex*jy)*np.arccos(-1.0/e_per)))/(2.*e_per*np.sqrt(ex**2 + ey**2 + ez**2))
+def compute_FO_prediction(args,eps_SA,e_per,ex,ey,ez,jx,jy,jz):
+    if args.use_c == True:
+        Delta_e = flybyslibrary.f_e_cdot_e_hat(eps_SA,e_per,ex,ey,ez,jx,jy,jz)
+    else:
+        Delta_e = (5*eps_SA*(np.sqrt(1 - e_per**(-2))*((1 + 2*e_per**2)*ey*ez*jx + (1 - 4*e_per**2)*ex*ez*jy + 2*(-1 + e_per**2)*ex*ey*jz) + 3*e_per*ez*(ey*jx - ex*jy)*np.arccos(-1.0/e_per)))/(2.*e_per*np.sqrt(ex**2 + ey**2 + ez**2))
 
     ArcCos = np.arccos
     Sqrt = np.sqrt
@@ -578,9 +610,7 @@ def compute_DA_prediction(args,eps_SA,e_per,ex,ey,ez,jx,jy,jz):
   
     return Delta_e,Delta_i
 
-
-
-def compute_DA_prediction_oct(args,eps_SA,eps_oct,e_per,ex,ey,ez,jx,jy,jz):
+def compute_FO_prediction_oct(args,eps_SA,eps_oct,e_per,ex,ey,ez,jx,jy,jz):
 
     ArcCos = np.arccos
     Sqrt = np.sqrt
@@ -594,54 +624,54 @@ def f(n,e_per):
     npi = n*np.pi
     return (npi - 3.0*L)*(npi - 2.0*L)*(npi - L)*(npi + L)*(npi + 2.0*L)*(npi + 3.0*L)
 
-def compute_CDA_prediction(args,eps_SA,e_per,ex,ey,ez,jx,jy,jz):
-
-
-    Delta_e_DA,Delta_i_CDA = compute_DA_prediction(args,eps_SA,e_per,ex,ey,ez,jx,jy,jz)
-
+def compute_SO_prediction(args,eps_SA,e_per,ex,ey,ez,jx,jy,jz):
+    
     f1 = f(1.0,e_per)
     f2 = f(2.0,e_per)
     f3 = f(3.0,e_per)
-
-    #print 'fs',f1,f2,f3
-    Delta_i = 0.0
 
     ArcCos = np.arccos
     Sqrt = np.sqrt
     eper = e_per
     Pi = np.pi
-    
+
     epsilon = 1.0e-5
     if e_per <= 1.0 + epsilon: ### parabolic limit
-        Delta_e_CDA = eps_SA*(15*ez*(ey*jx - ex*jy)*np.pi)/(2.*np.sqrt(ex**2 + ey**2 + ez**2)) \
+        Delta_e_SO = eps_SA*(15*ez*(ey*jx - ex*jy)*np.pi)/(2.*np.sqrt(ex**2 + ey**2 + ez**2)) \
             + eps_SA**2*(-9*(-6*ez**2*(jx**2 + jy**2) - 4*ey*ez*jy*jz + 4*ex*jx*(3*ey*jy - ez*jz) + ey**2*(25*ez**2 - 6*jx**2 + jz**2) + ex**2*(25*ez**2 - 6*jy**2 + jz**2))*np.pi**2)/(8.*np.sqrt(ex**2 + ey**2 + ez**2))
-
-    else:
-        exn = ex + (eps_SA*(np.sqrt(1 - e_per**(-2))*(ez*(jy - 10*e_per**2*jy) + (-5 + 2*e_per**2)*ey*jz) - 3*e_per*(3*ez*jy + ey*jz)*np.arccos(-1.0/e_per)))/(4.*e_per) - (3*np.sqrt(1 - e_per**(-2))*(ez*jx - 5*ex*jz)*eps_SA*np.arccos(-(1/e_per))**3*((-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2*(f2*f3 + f1*(f2 + f3)) - (-5 + 2*e_per**2)*np.pi**2*(f2*f3 + f1*(9*f2 + 4*f3))))/(e_per*f1*f2*f3)
-        eyn = ey + (eps_SA*(np.sqrt(1 - e_per**(-2))*(ez*(jx + 8*e_per**2*jx) + (-5 + 8*e_per**2)*ex*jz) + 3*e_per*(3*ez*jx + ex*jz)*np.arccos(-1.0/e_per)))/(4.*e_per) + (3*np.sqrt(1 - e_per**(-2))*(ez*jy - 5*ey*jz)*eps_SA*np.arccos(-(1/e_per))**3*((-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2*(f2*f3 + f1*(f2 + f3)) - (-5 + 2*e_per**2)*np.pi**2*(f2*f3 + f1*(9*f2 + 4*f3))))/(e_per*f1*f2*f3)
-        ezn = ez + (np.sqrt(1 - e_per**(-2))*((2 + e_per**2)*ey*jx + (2 - 5*e_per**2)*ex*jy)*eps_SA + 3*e_per*(ey*jx - ex*jy)*eps_SA*np.arccos(-(1/e_per)))/(2.*e_per) - (12*np.sqrt(1 - e_per**(-2))*(ex*jx - ey*jy)*eps_SA*np.arccos(-(1/e_per))**3*((-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2*(f2*f3 + f1*(f2 + f3)) - (-5 + 2*e_per**2)*np.pi**2*(f2*f3 + f1*(9*f2 + 4*f3))))/(e_per*f1*f2*f3)
-        jxn = jx - ((5*ey*ez - jy*jz)*eps_SA*(np.sqrt(1 - e_per**(-2))*(1 + 2*e_per**2) + 3*e_per*np.arccos(-(1/e_per))))/(4.*e_per) + (3*np.sqrt(1 - e_per**(-2))*(5*ex*ez - jx*jz)*eps_SA*np.arccos(-(1/e_per))**3*((-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2*(f2*f3 + f1*(f2 + f3)) - (-5 + 2*e_per**2)*np.pi**2*(f2*f3 + f1*(9*f2 + 4*f3))))/(e_per*f1*f2*f3)
-        jyn = jy + ((5*ex*ez - jx*jz)*eps_SA*(np.sqrt(1 - e_per**(-2))*(-1 + 4*e_per**2) + 3*e_per*np.arccos(-(1/e_per))))/(4.*e_per) - (3*np.sqrt(1 - e_per**(-2))*(5*ey*ez - jy*jz)*eps_SA*np.arccos(-(1/e_per))**3*((-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2*(f2*f3 + f1*(f2 + f3)) - (-5 + 2*e_per**2)*np.pi**2*(f2*f3 + f1*(9*f2 + 4*f3))))/(e_per*f1*f2*f3)
-        jzn = jz - (np.sqrt(1 - e_per**(-2))*(-1 + e_per**2)*(5*ex*ey - jx*jy)*eps_SA)/(2.*e_per) - (3*np.sqrt(1 - e_per**(-2))*(5*ex**2 - 5*ey**2 - jx**2 + jy**2)*eps_SA*np.arccos(-(1/e_per))**3*((-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2*(f2*f3 + f1*(f2 + f3)) - (-5 + 2*e_per**2)*np.pi**2*(f2*f3 + f1*(9*f2 + 4*f3))))/(e_per*f1*f2*f3)
-
-        Delta_e_CDA = compute_DA_prediction(args,eps_SA,e_per,exn,eyn,ezn,jxn,jyn,jzn)[0]
-
-        lmax=3
-        if lmax==1:
-            Delta_e_CDA += (3*eps_SA**2*np.arccos(-(1/e_per))*((5 - 2*e_per**2)*np.pi**2 + (-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2)*np.arccos(-1.0/e_per)*(60*(-1 + e_per**2)*((-1 + e_per**2)*ex**2*jx*jy + ey**2*jx*jy - e_per**2*ez**2*jx*jy - 2*(-2 + e_per**2)*ey*ez*jx*jz + 2*(-2 + e_per**2)*ex*ez*jy*jz + ex*ey*(-((-1 + e_per**2)*jx**2) - jy**2 + e_per**2*jz**2))*np.pi**4*np.arccos(-(1/e_per))**3 - 60*(-1 + e_per**2)*((5 + 7*e_per**2)*ex**2*jx*jy + (-5 + 6*e_per**2)*ey**2*jx*jy - 13*e_per**2*ez**2*jx*jy - 2*(10 + e_per**2)*ey*ez*jx*jz + 2*(10 + e_per**2)*ex*ez*jy*jz + ex*ey*(-((5 + 7*e_per**2)*jx**2) + (5 - 6*e_per**2)*jy**2 + 13*e_per**2*jz**2))*np.pi**2*np.arccos(-(1/e_per))**5 + 360*(-1 + e_per**2)*((1 + 2*e_per**2)*ex**2*jx*jy + (-1 + 4*e_per**2)*ey**2*jx*jy - 6*e_per**2*ez**2*jx*jy + 4*(-1 + e_per**2)*ey*ez*jx*jz - 4*(-1 + e_per**2)*ex*ez*jy*jz + ex*ey*(-((1 + 2*e_per**2)*jx**2) + (1 - 4*e_per**2)*jy**2 + 6*e_per**2*jz**2))*np.arccos(-(1/e_per))**7 - 3*np.sqrt(1 - e_per**(-2))*e_per**3*(2*ex**2*jx*jy + ey*jx*(2*ey*jy - 5*ez*jz) + ex*(50*ey*ez**2 - 2*ey*(jx**2 + jy**2) - 5*ez*jy*jz))*np.arccos(-(1/e_per))*np.arccos(-1.0/e_per)*f1 + np.arccos(-1.0/e_per)*(2*(-1 + e_per**2)*(25*(-1 + e_per**2)*ex**3*ey + (7 - 10*e_per**2)*ex**2*jx*jy + jx*((-7 + 4*e_per**2)*ey**2*jy - 36*e_per**2*ez**2*jy + 2*(-5 + 17*e_per**2)*ey*ez*jz) + ex*(-25*(-1 + e_per**2)*ey**3 + 2*ey*(jx**2 - jy**2) + 2*(5 + 7*e_per**2)*ez*jy*jz + e_per**2*ey*(-75*ez**2 + jx**2 + 5*jy**2 + 15*jz**2))) - 3*np.sqrt(1 - e_per**(-2))*e_per**3*(24*ez**2*jx*jy - 11*ez*(ey*jx + ex*jy)*jz - 10*ex*ey*jz**2)*np.arccos(-1.0/e_per))*f1))/(2.*e_per**4*np.sqrt(ex**2 + ey**2 + ez**2)*f1**2)
-        if lmax==2:
-            Delta_e_CDA += (3*eps_SA**2*np.arccos(-(1/e_per))*np.arccos(-1.0/e_per)*((ey*(-12*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*(4*(5 - 2*e_per**2)*np.pi**3 + (-5 + 8*e_per**2)*np.pi*np.arccos(-(1/e_per))**2)*(-8*(2*jx*((7 - 4*e_per**2)*ey*jy + (-2 + 5*e_per**2)*ez*jz) + ex*(25*(-2 + e_per**2)*ey**2 - 5*ez**2 + 4*jy**2 - e_per**2*jy**2 + 25*jz**2 - 10*e_per**2*jz**2))*np.pi**4 + 2*(2*jx*(-5*(7 + 2*e_per**2)*ey*jy + (10 + 53*e_per**2)*ez*jz) + ex*(25*(10 + e_per**2)*ey**2 - 5*(-5 + 6*e_per**2)*ez**2 - 20*jy**2 + 11*e_per**2*jy**2 - 125*jz**2 + 20*e_per**2*jz**2))*np.pi**2*np.arccos(-(1/e_per))**2 + 3*(-2*jx*((-7 + 4*e_per**2)*ey*jy + 2*(1 + 11*e_per**2)*ez*jz) + ex*(50*(-1 + e_per**2)*ey**2 + 5*(-1 + 4*e_per**2)*ez**2 + 4*jy**2 - 10*e_per**2*jy**2 + 25*jz**2 - 40*e_per**2*jz**2))*np.arccos(-(1/e_per))**4)*f1**2 - 12*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*(4*(5 - 2*e_per**2)*np.pi**2 + (-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2)*(-8*(5*(-5 + 2*e_per**2)*ex**3 + 4*jx*((-1 + 2*e_per**2)*ey*jy - ez*jz) + ex*(-5*(-5 + 2*e_per**2)*ey**2 + 5*(-1 + 2*e_per**2)*ez**2 + 9*jx**2 - 10*e_per**2*jx**2 - 5*jy**2 + 2*e_per**2*jy**2 + 25*jz**2 - 10*e_per**2*jz**2))*np.pi**5 + 2*(-5*(-25 + 4*e_per**2)*ex**3 + 4*jx*(5*ey*(jy + 4*e_per**2*jy) + (5 - 6*e_per**2)*ez*jz) + ex*(5*(-25 + 4*e_per**2)*ey**2 + 25*(1 + 4*e_per**2)*ez**2 - 45*jx**2 - 76*e_per**2*jx**2 + 25*jy**2 - 4*e_per**2*jy**2 - 125*jz**2 + 20*e_per**2*jz**2))*np.pi**3*np.arccos(-(1/e_per))**2 + 3*(5*(-5 + 8*e_per**2)*ex**3 - 4*jx*(ey*(jy + 8*e_per**2*jy) + (1 - 4*e_per**2)*ez*jz) + ex*(-5*(-5 + 8*e_per**2)*ey**2 - 5*(1 + 8*e_per**2)*ez**2 + 9*jx**2 + 24*e_per**2*jx**2 - 5*jy**2 + 8*e_per**2*jy**2 + 25*jz**2 - 40*e_per**2*jz**2))*np.pi*np.arccos(-(1/e_per))**4)*f1**2 + np.sqrt(1 - e_per**(-2))*e_per**2*np.pi*(4*(-5 + 2*e_per**2)*np.pi**2 + (5 - 8*e_per**2)*np.arccos(-(1/e_per))**2)*np.arccos(-1.0/e_per)*(np.sqrt(1 - e_per**(-2))*(-2*jx*((-7 + 4*e_per**2)*ey*jy + 2*(1 + 11*e_per**2)*ez*jz) + ex*(50*(-1 + e_per**2)*ey**2 + 5*(-1 + 4*e_per**2)*ez**2 + 4*jy**2 - 10*e_per**2*jy**2 + 25*jz**2 - 40*e_per**2*jz**2)) + 3*e_per*(5*ex*ez**2 + 2*ey*jx*jy - 2*ex*jy**2 - ez*jx*jz)*np.arccos(-(1/e_per)) - 15*e_per*jz*(3*ez*jx + ex*jz)*np.arccos(-1.0/e_per))*f1**2*f2 - 6*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*((5 - 2*e_per**2)*np.pi**3 + (-5 + 8*e_per**2)*np.pi*np.arccos(-(1/e_per))**2)*((2*jx*((-7 + 4*e_per**2)*ey*jy + (2 - 5*e_per**2)*ez*jz) + ex*(-25*(-2 + e_per**2)*ey**2 + 5*ez**2 - 4*jy**2 + e_per**2*jy**2 - 25*jz**2 + 10*e_per**2*jz**2))*np.pi**4 + (2*jx*(-5*(7 + 2*e_per**2)*ey*jy + (10 + 53*e_per**2)*ez*jz) + ex*(25*(10 + e_per**2)*ey**2 - 5*(-5 + 6*e_per**2)*ez**2 - 20*jy**2 + 11*e_per**2*jy**2 - 125*jz**2 + 20*e_per**2*jz**2))*np.pi**2*np.arccos(-(1/e_per))**2 + 6*(-2*jx*((-7 + 4*e_per**2)*ey*jy + 2*(1 + 11*e_per**2)*ez*jz) + ex*(50*(-1 + e_per**2)*ey**2 + 5*(-1 + 4*e_per**2)*ez**2 + 4*jy**2 - 10*e_per**2*jy**2 + 25*jz**2 - 40*e_per**2*jz**2))*np.arccos(-(1/e_per))**4)*f2**2 - 6*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*((5 - 2*e_per**2)*np.pi**2 + (-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2)*((-5*(-5 + 2*e_per**2)*ex**3 + 4*jx*(ey*(jy - 2*e_per**2*jy) + ez*jz) + ex*(5*(-5 + 2*e_per**2)*ey**2 + (5 - 10*e_per**2)*ez**2 - 9*jx**2 + 10*e_per**2*jx**2 + 5*jy**2 - 2*e_per**2*jy**2 - 25*jz**2 + 10*e_per**2*jz**2))*np.pi**5 + (-5*(-25 + 4*e_per**2)*ex**3 + 4*jx*(5*ey*(jy + 4*e_per**2*jy) + (5 - 6*e_per**2)*ez*jz) + ex*(5*(-25 + 4*e_per**2)*ey**2 + 25*(1 + 4*e_per**2)*ez**2 - 45*jx**2 - 76*e_per**2*jx**2 + 25*jy**2 - 4*e_per**2*jy**2 - 125*jz**2 + 20*e_per**2*jz**2))*np.pi**3*np.arccos(-(1/e_per))**2 + 6*(5*(-5 + 8*e_per**2)*ex**3 - 4*jx*(ey*(jy + 8*e_per**2*jy) + (1 - 4*e_per**2)*ez*jz) + ex*(-5*(-5 + 8*e_per**2)*ey**2 - 5*(1 + 8*e_per**2)*ez**2 + 9*jx**2 + 24*e_per**2*jx**2 - 5*jy**2 + 8*e_per**2*jy**2 + 25*jz**2 - 40*e_per**2*jz**2))*np.pi*np.arccos(-(1/e_per))**4)*f2**2 + np.sqrt(1 - e_per**(-2))*e_per**2*np.pi*((-5 + 2*e_per**2)*np.pi**2 + (5 - 8*e_per**2)*np.arccos(-(1/e_per))**2)*np.arccos(-1.0/e_per)*(np.sqrt(1 - e_per**(-2))*(-2*jx*((-7 + 4*e_per**2)*ey*jy + 2*(1 + 11*e_per**2)*ez*jz) + ex*(50*(-1 + e_per**2)*ey**2 + 5*(-1 + 4*e_per**2)*ez**2 + 4*jy**2 - 10*e_per**2*jy**2 + 25*jz**2 - 40*e_per**2*jz**2)) + 3*e_per*(5*ex*ez**2 + 2*ey*jx*jy - 2*ex*jy**2 - ez*jx*jz)*np.arccos(-(1/e_per)) - 15*e_per*jz*(3*ez*jx + ex*jz)*np.arccos(-1.0/e_per))*f1*f2**2))/np.pi + (ex*(12*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*(4*(5 - 2*e_per**2)*np.pi**3 + (-5 + 8*e_per**2)*np.pi*np.arccos(-(1/e_per))**2)*(-8*(25*(-2 + e_per**2)*ex**2*ey + 2*(7 - 3*e_per**2)*ex*jx*jy - 2*(2 + 3*e_per**2)*ez*jy*jz + ey*(5*(-1 + e_per**2)*ez**2 + (4 - 3*e_per**2)*jx**2 + 5*(5 - 3*e_per**2)*jz**2))*np.pi**4 + 2*(25*(10 + e_per**2)*ex**2*ey + 2*(-35 + 3*e_per**2)*ex*jx*jy + 2*(10 - 51*e_per**2)*ez*jy*jz + 5*ey*((5 + 7*e_per**2)*ez**2 - (4 + 3*e_per**2)*jx**2 - (25 + 9*e_per**2)*jz**2))*np.pi**2*np.arccos(-(1/e_per))**2 + 3*(50*(-1 + e_per**2)*ex**2*ey + 2*(7 - 10*e_per**2)*ex*jx*jy + 4*(-1 + 13*e_per**2)*ez*jy*jz + ey*(-5*(1 + 2*e_per**2)*ez**2 + 2*(2 + e_per**2)*jx**2 + 5*(5 - 2*e_per**2)*jz**2))*np.arccos(-(1/e_per))**4)*f1**2 - 12*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*(4*(5 - 2*e_per**2)*np.pi**2 + (-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2)*(-8*(5*(-5 + 3*e_per**2)*ex**2*ey - 5*(-5 + 3*e_per**2)*ey**3 + 4*(1 + e_per**2)*ex*jx*jy - 4*(-1 + e_per**2)*ez*jy*jz + ey*(5*(1 + e_per**2)*ez**2 + (5 - 3*e_per**2)*jx**2 - 9*jy**2 - e_per**2*jy**2 - 25*jz**2 + 15*e_per**2*jz**2))*np.pi**5 + 2*(5*(25 + 9*e_per**2)*ex**2*ey - 5*(25 + 9*e_per**2)*ey**3 + 4*(-5 + 19*e_per**2)*ex*jx*jy - 4*(5 + 7*e_per**2)*ez*jy*jz + ey*(5*(-5 + 19*e_per**2)*ez**2 - (25 + 9*e_per**2)*jx**2 + 45*jy**2 - 67*e_per**2*jy**2 + 125*jz**2 + 45*e_per**2*jz**2))*np.pi**3*np.arccos(-(1/e_per))**2 + 3*(5*(-5 + 2*e_per**2)*ex**2*ey - 5*(-5 + 2*e_per**2)*ey**3 + 4*(1 - 10*e_per**2)*ex*jx*jy + 4*(1 + 2*e_per**2)*ez*jy*jz + ey*((5 - 50*e_per**2)*ez**2 + (5 - 2*e_per**2)*jx**2 - 9*jy**2 + 42*e_per**2*jy**2 - 25*jz**2 + 10*e_per**2*jz**2))*np.pi*np.arccos(-(1/e_per))**4)*f1**2 + np.sqrt(1 - e_per**(-2))*e_per**2*np.pi*(4*(-5 + 2*e_per**2)*np.pi**2 + (5 - 8*e_per**2)*np.arccos(-(1/e_per))**2)*np.arccos(-1.0/e_per)*(np.sqrt(1 - e_per**(-2))*(-50*(-1 + e_per**2)*ex**2*ey + 2*(-7 + 10*e_per**2)*ex*jx*jy + 4*(1 - 13*e_per**2)*ez*jy*jz + ey*(5*(1 + 2*e_per**2)*ez**2 - 2*(2 + e_per**2)*jx**2 + 5*(-5 + 2*e_per**2)*jz**2)) + 3*e_per*(5*ey*ez**2 - 2*ey*jx**2 + 2*ex*jx*jy - ez*jy*jz)*np.arccos(-(1/e_per)) - 15*e_per*jz*(3*ez*jy + ey*jz)*np.arccos(-1.0/e_per))*f1**2*f2 + 6*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*((5 - 2*e_per**2)*np.pi**3 + (-5 + 8*e_per**2)*np.pi*np.arccos(-(1/e_per))**2)*((-25*(-2 + e_per**2)*ex**2*ey + 2*(-7 + 3*e_per**2)*ex*jx*jy + 2*(2 + 3*e_per**2)*ez*jy*jz + ey*(-5*(-1 + e_per**2)*ez**2 + (-4 + 3*e_per**2)*jx**2 + 5*(-5 + 3*e_per**2)*jz**2))*np.pi**4 + (25*(10 + e_per**2)*ex**2*ey + 2*(-35 + 3*e_per**2)*ex*jx*jy + 2*(10 - 51*e_per**2)*ez*jy*jz + 5*ey*((5 + 7*e_per**2)*ez**2 - (4 + 3*e_per**2)*jx**2 - (25 + 9*e_per**2)*jz**2))*np.pi**2*np.arccos(-(1/e_per))**2 + 6*(50*(-1 + e_per**2)*ex**2*ey + 2*(7 - 10*e_per**2)*ex*jx*jy + 4*(-1 + 13*e_per**2)*ez*jy*jz + ey*(-5*(1 + 2*e_per**2)*ez**2 + 2*(2 + e_per**2)*jx**2 + 5*(5 - 2*e_per**2)*jz**2))*np.arccos(-(1/e_per))**4)*f2**2 - 6*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*((5 - 2*e_per**2)*np.pi**2 + (-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2)*((-5*(-5 + 3*e_per**2)*ex**2*ey + 5*(-5 + 3*e_per**2)*ey**3 - 4*(1 + e_per**2)*ex*jx*jy + 4*(-1 + e_per**2)*ez*jy*jz + ey*(-5*(1 + e_per**2)*ez**2 + (-5 + 3*e_per**2)*jx**2 + 9*jy**2 + e_per**2*jy**2 + 25*jz**2 - 15*e_per**2*jz**2))*np.pi**5 + (5*(25 + 9*e_per**2)*ex**2*ey - 5*(25 + 9*e_per**2)*ey**3 + 4*(-5 + 19*e_per**2)*ex*jx*jy - 4*(5 + 7*e_per**2)*ez*jy*jz + ey*(5*(-5 + 19*e_per**2)*ez**2 - (25 + 9*e_per**2)*jx**2 + 45*jy**2 - 67*e_per**2*jy**2 + 125*jz**2 + 45*e_per**2*jz**2))*np.pi**3*np.arccos(-(1/e_per))**2 + 6*(5*(-5 + 2*e_per**2)*ex**2*ey - 5*(-5 + 2*e_per**2)*ey**3 + 4*(1 - 10*e_per**2)*ex*jx*jy + 4*(1 + 2*e_per**2)*ez*jy*jz + ey*((5 - 50*e_per**2)*ez**2 + (5 - 2*e_per**2)*jx**2 - 9*jy**2 + 42*e_per**2*jy**2 - 25*jz**2 + 10*e_per**2*jz**2))*np.pi*np.arccos(-(1/e_per))**4)*f2**2 + np.sqrt(1 - e_per**(-2))*e_per**2*np.pi*((-5 + 2*e_per**2)*np.pi**2 + (5 - 8*e_per**2)*np.arccos(-(1/e_per))**2)*np.arccos(-1.0/e_per)*(np.sqrt(1 - e_per**(-2))*(-50*(-1 + e_per**2)*ex**2*ey + 2*(-7 + 10*e_per**2)*ex*jx*jy + 4*(1 - 13*e_per**2)*ez*jy*jz + ey*(5*(1 + 2*e_per**2)*ez**2 - 2*(2 + e_per**2)*jx**2 + 5*(-5 + 2*e_per**2)*jz**2)) + 3*e_per*(5*ey*ez**2 - 2*ey*jx**2 + 2*ex*jx*jy - ez*jy*jz)*np.arccos(-(1/e_per)) - 15*e_per*jz*(3*ez*jy + ey*jz)*np.arccos(-1.0/e_per))*f1*f2**2))/np.pi - 12*np.sqrt(1 - e_per**(-2))*e_per**2*ez*((-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2*np.arccos(-1.0/e_per)*(2*np.sqrt(1 - e_per**(-2))*((ey*jx - ex*jy)*jz + e_per**2*(5*ex*ey*ez + 3*ez*jx*jy - ey*jx*jz + ex*jy*jz)) + e_per*(6*ez*jx*jy + ey*jx*jz + ex*jy*jz)*np.arccos(-1.0/e_per))*f1*f2*(f1 + f2) - e_per*(-5 + 2*e_per**2)*(10*ex*ey*ez - ey*jx*jz - ex*jy*jz)*np.pi**2*np.arccos(-(1/e_per))*np.arccos(-1.0/e_per)*f1*f2*(4*f1 + f2) - (-5 + 2*e_per**2)*np.pi**2*np.arccos(-1.0/e_per)*(2*np.sqrt(1 - e_per**(-2))*((ey*jx - ex*jy)*jz + e_per**2*(5*ex*ey*ez + 3*ez*jx*jy - ey*jx*jz + ex*jy*jz)) + e_per*(6*ez*jx*jy + ey*jx*jz + ex*jy*jz)*np.arccos(-1.0/e_per))*f1*f2*(4*f1 + f2) + 36*np.sqrt(1 - e_per**(-2))*(-5 + 8*e_per**2)*(4*(ey*jx - ex*jy)*jz + e_per**2*(5*ex*ey*ez + 5*ez*jx*jy - ey*jx*jz + 7*ex*jy*jz))*np.arccos(-(1/e_per))**9*(f1**2 + f2**2) - np.sqrt(1 - e_per**(-2))*(1320*(-(ey*jx*jz) + ex*jy*jz) + 16*e_per**4*(55*ex*ey*ez + 55*ez*jx*jy + 21*ey*jx*jz + 45*ex*jy*jz) - e_per**2*(1225*ex*ey*ez + 1225*ez*jx*jy - 1173*ey*jx*jz + 2643*ex*jy*jz))*np.pi**2*np.arccos(-(1/e_per))**7*(4*f1**2 + f2**2) + 2*np.sqrt(1 - e_per**(-2))*(e_per**4*(85*ex*ey*ez + 85*ez*jx*jy + 111*ey*jx*jz - 9*ex*jy*jz) + 240*(-(ey*jx*jz) + ex*jy*jz) - e_per**2*(175*ex*ey*ez + 175*ez*jx*jy + 141*ey*jx*jz + 69*ex*jy*jz))*np.pi**4*np.arccos(-(1/e_per))**5*(16*f1**2 + f2**2) + np.arccos(-(1/e_per))**3*(e_per*(-5 + 8*e_per**2)*(10*ex*ey*ez - ey*jx*jz - ex*jy*jz)*np.arccos(-1.0/e_per)*f1*f2*(f1 + f2) - np.sqrt(1 - e_per**(-2))*(-5 + 2*e_per**2)*(24*(-(ey*jx) + ex*jy)*jz + e_per**2*(5*ex*ey*ez + 5*ez*jx*jy + 15*ey*jx*jz - 9*ex*jy*jz))*np.pi**6*(64*f1**2 + f2**2)))))/(2.*e_per**4*np.sqrt(ex**2 + ey**2 + ez**2)*f1**2*f2**2)
-        if lmax==3:
-            Delta_e_CDA += (3*eps_SA**2*np.arccos(-(1/e_per))*np.arccos(-1.0/e_per)*((ey*(-18*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*(9*(5 - 2*e_per**2)*np.pi**3 + (-5 + 8*e_per**2)*np.pi*np.arccos(-(1/e_per))**2)*(-27*(2*jx*((7 - 4*e_per**2)*ey*jy + (-2 + 5*e_per**2)*ez*jz) + ex*(25*(-2 + e_per**2)*ey**2 - 5*ez**2 + 4*jy**2 - e_per**2*jy**2 + 25*jz**2 - 10*e_per**2*jz**2))*np.pi**4 + 3*(2*jx*(-5*(7 + 2*e_per**2)*ey*jy + (10 + 53*e_per**2)*ez*jz) + ex*(25*(10 + e_per**2)*ey**2 - 5*(-5 + 6*e_per**2)*ez**2 - 20*jy**2 + 11*e_per**2*jy**2 - 125*jz**2 + 20*e_per**2*jz**2))*np.pi**2*np.arccos(-(1/e_per))**2 + 2*(-2*jx*((-7 + 4*e_per**2)*ey*jy + 2*(1 + 11*e_per**2)*ez*jz) + ex*(50*(-1 + e_per**2)*ey**2 + 5*(-1 + 4*e_per**2)*ez**2 + 4*jy**2 - 10*e_per**2*jy**2 + 25*jz**2 - 40*e_per**2*jz**2))*np.arccos(-(1/e_per))**4)*f1**2*f2**2 - 18*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*(9*(5 - 2*e_per**2)*np.pi**2 + (-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2)*(-27*(5*(-5 + 2*e_per**2)*ex**3 + 4*jx*((-1 + 2*e_per**2)*ey*jy - ez*jz) + ex*(-5*(-5 + 2*e_per**2)*ey**2 + 5*(-1 + 2*e_per**2)*ez**2 + 9*jx**2 - 10*e_per**2*jx**2 - 5*jy**2 + 2*e_per**2*jy**2 + 25*jz**2 - 10*e_per**2*jz**2))*np.pi**5 - 3*(5*(-25 + 4*e_per**2)*ex**3 - 4*jx*(5*ey*(jy + 4*e_per**2*jy) + (5 - 6*e_per**2)*ez*jz) + ex*(-5*(-25 + 4*e_per**2)*ey**2 - 25*(1 + 4*e_per**2)*ez**2 + 45*jx**2 + 76*e_per**2*jx**2 - 25*jy**2 + 4*e_per**2*jy**2 + 125*jz**2 - 20*e_per**2*jz**2))*np.pi**3*np.arccos(-(1/e_per))**2 + 2*(5*(-5 + 8*e_per**2)*ex**3 - 4*jx*(ey*(jy + 8*e_per**2*jy) + (1 - 4*e_per**2)*ez*jz) + ex*(-5*(-5 + 8*e_per**2)*ey**2 - 5*(1 + 8*e_per**2)*ez**2 + 9*jx**2 + 24*e_per**2*jx**2 - 5*jy**2 + 8*e_per**2*jy**2 + 25*jz**2 - 40*e_per**2*jz**2))*np.pi*np.arccos(-(1/e_per))**4)*f1**2*f2**2 + np.sqrt(1 - e_per**(-2))*e_per**2*np.pi*(9*(-5 + 2*e_per**2)*np.pi**2 + (5 - 8*e_per**2)*np.arccos(-(1/e_per))**2)*np.arccos(-1.0/e_per)*(np.sqrt(1 - e_per**(-2))*(-2*jx*((-7 + 4*e_per**2)*ey*jy + 2*(1 + 11*e_per**2)*ez*jz) + ex*(50*(-1 + e_per**2)*ey**2 + 5*(-1 + 4*e_per**2)*ez**2 + 4*jy**2 - 10*e_per**2*jy**2 + 25*jz**2 - 40*e_per**2*jz**2)) + 3*e_per*(5*ex*ez**2 + 2*ey*jx*jy - 2*ex*jy**2 - ez*jx*jz)*np.arccos(-(1/e_per)) - 15*e_per*jz*(3*ez*jx + ex*jz)*np.arccos(-1.0/e_per))*f1**2*f2**2*f3 - 12*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*(4*(5 - 2*e_per**2)*np.pi**3 + (-5 + 8*e_per**2)*np.pi*np.arccos(-(1/e_per))**2)*(-8*(2*jx*((7 - 4*e_per**2)*ey*jy + (-2 + 5*e_per**2)*ez*jz) + ex*(25*(-2 + e_per**2)*ey**2 - 5*ez**2 + 4*jy**2 - e_per**2*jy**2 + 25*jz**2 - 10*e_per**2*jz**2))*np.pi**4 + 2*(2*jx*(-5*(7 + 2*e_per**2)*ey*jy + (10 + 53*e_per**2)*ez*jz) + ex*(25*(10 + e_per**2)*ey**2 - 5*(-5 + 6*e_per**2)*ez**2 - 20*jy**2 + 11*e_per**2*jy**2 - 125*jz**2 + 20*e_per**2*jz**2))*np.pi**2*np.arccos(-(1/e_per))**2 + 3*(-2*jx*((-7 + 4*e_per**2)*ey*jy + 2*(1 + 11*e_per**2)*ez*jz) + ex*(50*(-1 + e_per**2)*ey**2 + 5*(-1 + 4*e_per**2)*ez**2 + 4*jy**2 - 10*e_per**2*jy**2 + 25*jz**2 - 40*e_per**2*jz**2))*np.arccos(-(1/e_per))**4)*f1**2*f3**2 - 12*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*(4*(5 - 2*e_per**2)*np.pi**2 + (-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2)*(-8*(5*(-5 + 2*e_per**2)*ex**3 + 4*jx*((-1 + 2*e_per**2)*ey*jy - ez*jz) + ex*(-5*(-5 + 2*e_per**2)*ey**2 + 5*(-1 + 2*e_per**2)*ez**2 + 9*jx**2 - 10*e_per**2*jx**2 - 5*jy**2 + 2*e_per**2*jy**2 + 25*jz**2 - 10*e_per**2*jz**2))*np.pi**5 + 2*(-5*(-25 + 4*e_per**2)*ex**3 + 4*jx*(5*ey*(jy + 4*e_per**2*jy) + (5 - 6*e_per**2)*ez*jz) + ex*(5*(-25 + 4*e_per**2)*ey**2 + 25*(1 + 4*e_per**2)*ez**2 - 45*jx**2 - 76*e_per**2*jx**2 + 25*jy**2 - 4*e_per**2*jy**2 - 125*jz**2 + 20*e_per**2*jz**2))*np.pi**3*np.arccos(-(1/e_per))**2 + 3*(5*(-5 + 8*e_per**2)*ex**3 - 4*jx*(ey*(jy + 8*e_per**2*jy) + (1 - 4*e_per**2)*ez*jz) + ex*(-5*(-5 + 8*e_per**2)*ey**2 - 5*(1 + 8*e_per**2)*ez**2 + 9*jx**2 + 24*e_per**2*jx**2 - 5*jy**2 + 8*e_per**2*jy**2 + 25*jz**2 - 40*e_per**2*jz**2))*np.pi*np.arccos(-(1/e_per))**4)*f1**2*f3**2 + np.sqrt(1 - e_per**(-2))*e_per**2*np.pi*(4*(-5 + 2*e_per**2)*np.pi**2 + (5 - 8*e_per**2)*np.arccos(-(1/e_per))**2)*np.arccos(-1.0/e_per)*(np.sqrt(1 - e_per**(-2))*(-2*jx*((-7 + 4*e_per**2)*ey*jy + 2*(1 + 11*e_per**2)*ez*jz) + ex*(50*(-1 + e_per**2)*ey**2 + 5*(-1 + 4*e_per**2)*ez**2 + 4*jy**2 - 10*e_per**2*jy**2 + 25*jz**2 - 40*e_per**2*jz**2)) + 3*e_per*(5*ex*ez**2 + 2*ey*jx*jy - 2*ex*jy**2 - ez*jx*jz)*np.arccos(-(1/e_per)) - 15*e_per*jz*(3*ez*jx + ex*jz)*np.arccos(-1.0/e_per))*f1**2*f2*f3**2 - 6*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*((5 - 2*e_per**2)*np.pi**3 + (-5 + 8*e_per**2)*np.pi*np.arccos(-(1/e_per))**2)*((2*jx*((-7 + 4*e_per**2)*ey*jy + (2 - 5*e_per**2)*ez*jz) + ex*(-25*(-2 + e_per**2)*ey**2 + 5*ez**2 - 4*jy**2 + e_per**2*jy**2 - 25*jz**2 + 10*e_per**2*jz**2))*np.pi**4 + (2*jx*(-5*(7 + 2*e_per**2)*ey*jy + (10 + 53*e_per**2)*ez*jz) + ex*(25*(10 + e_per**2)*ey**2 - 5*(-5 + 6*e_per**2)*ez**2 - 20*jy**2 + 11*e_per**2*jy**2 - 125*jz**2 + 20*e_per**2*jz**2))*np.pi**2*np.arccos(-(1/e_per))**2 + 6*(-2*jx*((-7 + 4*e_per**2)*ey*jy + 2*(1 + 11*e_per**2)*ez*jz) + ex*(50*(-1 + e_per**2)*ey**2 + 5*(-1 + 4*e_per**2)*ez**2 + 4*jy**2 - 10*e_per**2*jy**2 + 25*jz**2 - 40*e_per**2*jz**2))*np.arccos(-(1/e_per))**4)*f2**2*f3**2 - 6*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*((5 - 2*e_per**2)*np.pi**2 + (-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2)*((-5*(-5 + 2*e_per**2)*ex**3 + 4*jx*(ey*(jy - 2*e_per**2*jy) + ez*jz) + ex*(5*(-5 + 2*e_per**2)*ey**2 + (5 - 10*e_per**2)*ez**2 - 9*jx**2 + 10*e_per**2*jx**2 + 5*jy**2 - 2*e_per**2*jy**2 - 25*jz**2 + 10*e_per**2*jz**2))*np.pi**5 + (-5*(-25 + 4*e_per**2)*ex**3 + 4*jx*(5*ey*(jy + 4*e_per**2*jy) + (5 - 6*e_per**2)*ez*jz) + ex*(5*(-25 + 4*e_per**2)*ey**2 + 25*(1 + 4*e_per**2)*ez**2 - 45*jx**2 - 76*e_per**2*jx**2 + 25*jy**2 - 4*e_per**2*jy**2 - 125*jz**2 + 20*e_per**2*jz**2))*np.pi**3*np.arccos(-(1/e_per))**2 + 6*(5*(-5 + 8*e_per**2)*ex**3 - 4*jx*(ey*(jy + 8*e_per**2*jy) + (1 - 4*e_per**2)*ez*jz) + ex*(-5*(-5 + 8*e_per**2)*ey**2 - 5*(1 + 8*e_per**2)*ez**2 + 9*jx**2 + 24*e_per**2*jx**2 - 5*jy**2 + 8*e_per**2*jy**2 + 25*jz**2 - 40*e_per**2*jz**2))*np.pi*np.arccos(-(1/e_per))**4)*f2**2*f3**2 + np.sqrt(1 - e_per**(-2))*e_per**2*np.pi*((-5 + 2*e_per**2)*np.pi**2 + (5 - 8*e_per**2)*np.arccos(-(1/e_per))**2)*np.arccos(-1.0/e_per)*(np.sqrt(1 - e_per**(-2))*(-2*jx*((-7 + 4*e_per**2)*ey*jy + 2*(1 + 11*e_per**2)*ez*jz) + ex*(50*(-1 + e_per**2)*ey**2 + 5*(-1 + 4*e_per**2)*ez**2 + 4*jy**2 - 10*e_per**2*jy**2 + 25*jz**2 - 40*e_per**2*jz**2)) + 3*e_per*(5*ex*ez**2 + 2*ey*jx*jy - 2*ex*jy**2 - ez*jx*jz)*np.arccos(-(1/e_per)) - 15*e_per*jz*(3*ez*jx + ex*jz)*np.arccos(-1.0/e_per))*f1*f2**2*f3**2))/np.pi + (ex*(18*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*(9*(5 - 2*e_per**2)*np.pi**3 + (-5 + 8*e_per**2)*np.pi*np.arccos(-(1/e_per))**2)*(-27*(25*(-2 + e_per**2)*ex**2*ey + 2*(7 - 3*e_per**2)*ex*jx*jy - 2*(2 + 3*e_per**2)*ez*jy*jz + ey*(5*(-1 + e_per**2)*ez**2 + (4 - 3*e_per**2)*jx**2 + 5*(5 - 3*e_per**2)*jz**2))*np.pi**4 + 3*(25*(10 + e_per**2)*ex**2*ey + 2*(-35 + 3*e_per**2)*ex*jx*jy + 2*(10 - 51*e_per**2)*ez*jy*jz + 5*ey*((5 + 7*e_per**2)*ez**2 - (4 + 3*e_per**2)*jx**2 - (25 + 9*e_per**2)*jz**2))*np.pi**2*np.arccos(-(1/e_per))**2 + 2*(50*(-1 + e_per**2)*ex**2*ey + 2*(7 - 10*e_per**2)*ex*jx*jy + 4*(-1 + 13*e_per**2)*ez*jy*jz + ey*(-5*(1 + 2*e_per**2)*ez**2 + 2*(2 + e_per**2)*jx**2 + 5*(5 - 2*e_per**2)*jz**2))*np.arccos(-(1/e_per))**4)*f1**2*f2**2 - 18*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*(9*(5 - 2*e_per**2)*np.pi**2 + (-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2)*(-27*(5*(-5 + 3*e_per**2)*ex**2*ey - 5*(-5 + 3*e_per**2)*ey**3 + 4*(1 + e_per**2)*ex*jx*jy - 4*(-1 + e_per**2)*ez*jy*jz + ey*(5*(1 + e_per**2)*ez**2 + (5 - 3*e_per**2)*jx**2 - 9*jy**2 - e_per**2*jy**2 - 25*jz**2 + 15*e_per**2*jz**2))*np.pi**5 + 3*(5*(25 + 9*e_per**2)*ex**2*ey - 5*(25 + 9*e_per**2)*ey**3 + 4*(-5 + 19*e_per**2)*ex*jx*jy - 4*(5 + 7*e_per**2)*ez*jy*jz + ey*(5*(-5 + 19*e_per**2)*ez**2 - (25 + 9*e_per**2)*jx**2 + 45*jy**2 - 67*e_per**2*jy**2 + 125*jz**2 + 45*e_per**2*jz**2))*np.pi**3*np.arccos(-(1/e_per))**2 + 2*(5*(-5 + 2*e_per**2)*ex**2*ey - 5*(-5 + 2*e_per**2)*ey**3 + 4*(1 - 10*e_per**2)*ex*jx*jy + 4*(1 + 2*e_per**2)*ez*jy*jz + ey*((5 - 50*e_per**2)*ez**2 + (5 - 2*e_per**2)*jx**2 - 9*jy**2 + 42*e_per**2*jy**2 - 25*jz**2 + 10*e_per**2*jz**2))*np.pi*np.arccos(-(1/e_per))**4)*f1**2*f2**2 + np.sqrt(1 - e_per**(-2))*e_per**2*np.pi*(9*(-5 + 2*e_per**2)*np.pi**2 + (5 - 8*e_per**2)*np.arccos(-(1/e_per))**2)*np.arccos(-1.0/e_per)*(np.sqrt(1 - e_per**(-2))*(-50*(-1 + e_per**2)*ex**2*ey + 2*(-7 + 10*e_per**2)*ex*jx*jy + 4*(1 - 13*e_per**2)*ez*jy*jz + ey*(5*(1 + 2*e_per**2)*ez**2 - 2*(2 + e_per**2)*jx**2 + 5*(-5 + 2*e_per**2)*jz**2)) + 3*e_per*(5*ey*ez**2 - 2*ey*jx**2 + 2*ex*jx*jy - ez*jy*jz)*np.arccos(-(1/e_per)) - 15*e_per*jz*(3*ez*jy + ey*jz)*np.arccos(-1.0/e_per))*f1**2*f2**2*f3 + 12*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*(4*(5 - 2*e_per**2)*np.pi**3 + (-5 + 8*e_per**2)*np.pi*np.arccos(-(1/e_per))**2)*(-8*(25*(-2 + e_per**2)*ex**2*ey + 2*(7 - 3*e_per**2)*ex*jx*jy - 2*(2 + 3*e_per**2)*ez*jy*jz + ey*(5*(-1 + e_per**2)*ez**2 + (4 - 3*e_per**2)*jx**2 + 5*(5 - 3*e_per**2)*jz**2))*np.pi**4 + 2*(25*(10 + e_per**2)*ex**2*ey + 2*(-35 + 3*e_per**2)*ex*jx*jy + 2*(10 - 51*e_per**2)*ez*jy*jz + 5*ey*((5 + 7*e_per**2)*ez**2 - (4 + 3*e_per**2)*jx**2 - (25 + 9*e_per**2)*jz**2))*np.pi**2*np.arccos(-(1/e_per))**2 + 3*(50*(-1 + e_per**2)*ex**2*ey + 2*(7 - 10*e_per**2)*ex*jx*jy + 4*(-1 + 13*e_per**2)*ez*jy*jz + ey*(-5*(1 + 2*e_per**2)*ez**2 + 2*(2 + e_per**2)*jx**2 + 5*(5 - 2*e_per**2)*jz**2))*np.arccos(-(1/e_per))**4)*f1**2*f3**2 - 12*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*(4*(5 - 2*e_per**2)*np.pi**2 + (-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2)*(-8*(5*(-5 + 3*e_per**2)*ex**2*ey - 5*(-5 + 3*e_per**2)*ey**3 + 4*(1 + e_per**2)*ex*jx*jy - 4*(-1 + e_per**2)*ez*jy*jz + ey*(5*(1 + e_per**2)*ez**2 + (5 - 3*e_per**2)*jx**2 - 9*jy**2 - e_per**2*jy**2 - 25*jz**2 + 15*e_per**2*jz**2))*np.pi**5 + 2*(5*(25 + 9*e_per**2)*ex**2*ey - 5*(25 + 9*e_per**2)*ey**3 + 4*(-5 + 19*e_per**2)*ex*jx*jy - 4*(5 + 7*e_per**2)*ez*jy*jz + ey*(5*(-5 + 19*e_per**2)*ez**2 - (25 + 9*e_per**2)*jx**2 + 45*jy**2 - 67*e_per**2*jy**2 + 125*jz**2 + 45*e_per**2*jz**2))*np.pi**3*np.arccos(-(1/e_per))**2 + 3*(5*(-5 + 2*e_per**2)*ex**2*ey - 5*(-5 + 2*e_per**2)*ey**3 + 4*(1 - 10*e_per**2)*ex*jx*jy + 4*(1 + 2*e_per**2)*ez*jy*jz + ey*((5 - 50*e_per**2)*ez**2 + (5 - 2*e_per**2)*jx**2 - 9*jy**2 + 42*e_per**2*jy**2 - 25*jz**2 + 10*e_per**2*jz**2))*np.pi*np.arccos(-(1/e_per))**4)*f1**2*f3**2 + np.sqrt(1 - e_per**(-2))*e_per**2*np.pi*(4*(-5 + 2*e_per**2)*np.pi**2 + (5 - 8*e_per**2)*np.arccos(-(1/e_per))**2)*np.arccos(-1.0/e_per)*(np.sqrt(1 - e_per**(-2))*(-50*(-1 + e_per**2)*ex**2*ey + 2*(-7 + 10*e_per**2)*ex*jx*jy + 4*(1 - 13*e_per**2)*ez*jy*jz + ey*(5*(1 + 2*e_per**2)*ez**2 - 2*(2 + e_per**2)*jx**2 + 5*(-5 + 2*e_per**2)*jz**2)) + 3*e_per*(5*ey*ez**2 - 2*ey*jx**2 + 2*ex*jx*jy - ez*jy*jz)*np.arccos(-(1/e_per)) - 15*e_per*jz*(3*ez*jy + ey*jz)*np.arccos(-1.0/e_per))*f1**2*f2*f3**2 + 6*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*((5 - 2*e_per**2)*np.pi**3 + (-5 + 8*e_per**2)*np.pi*np.arccos(-(1/e_per))**2)*((-25*(-2 + e_per**2)*ex**2*ey + 2*(-7 + 3*e_per**2)*ex*jx*jy + 2*(2 + 3*e_per**2)*ez*jy*jz + ey*(-5*(-1 + e_per**2)*ez**2 + (-4 + 3*e_per**2)*jx**2 + 5*(-5 + 3*e_per**2)*jz**2))*np.pi**4 + (25*(10 + e_per**2)*ex**2*ey + 2*(-35 + 3*e_per**2)*ex*jx*jy + 2*(10 - 51*e_per**2)*ez*jy*jz + 5*ey*((5 + 7*e_per**2)*ez**2 - (4 + 3*e_per**2)*jx**2 - (25 + 9*e_per**2)*jz**2))*np.pi**2*np.arccos(-(1/e_per))**2 + 6*(50*(-1 + e_per**2)*ex**2*ey + 2*(7 - 10*e_per**2)*ex*jx*jy + 4*(-1 + 13*e_per**2)*ez*jy*jz + ey*(-5*(1 + 2*e_per**2)*ez**2 + 2*(2 + e_per**2)*jx**2 + 5*(5 - 2*e_per**2)*jz**2))*np.arccos(-(1/e_per))**4)*f2**2*f3**2 - 6*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*((5 - 2*e_per**2)*np.pi**2 + (-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2)*((-5*(-5 + 3*e_per**2)*ex**2*ey + 5*(-5 + 3*e_per**2)*ey**3 - 4*(1 + e_per**2)*ex*jx*jy + 4*(-1 + e_per**2)*ez*jy*jz + ey*(-5*(1 + e_per**2)*ez**2 + (-5 + 3*e_per**2)*jx**2 + 9*jy**2 + e_per**2*jy**2 + 25*jz**2 - 15*e_per**2*jz**2))*np.pi**5 + (5*(25 + 9*e_per**2)*ex**2*ey - 5*(25 + 9*e_per**2)*ey**3 + 4*(-5 + 19*e_per**2)*ex*jx*jy - 4*(5 + 7*e_per**2)*ez*jy*jz + ey*(5*(-5 + 19*e_per**2)*ez**2 - (25 + 9*e_per**2)*jx**2 + 45*jy**2 - 67*e_per**2*jy**2 + 125*jz**2 + 45*e_per**2*jz**2))*np.pi**3*np.arccos(-(1/e_per))**2 + 6*(5*(-5 + 2*e_per**2)*ex**2*ey - 5*(-5 + 2*e_per**2)*ey**3 + 4*(1 - 10*e_per**2)*ex*jx*jy + 4*(1 + 2*e_per**2)*ez*jy*jz + ey*((5 - 50*e_per**2)*ez**2 + (5 - 2*e_per**2)*jx**2 - 9*jy**2 + 42*e_per**2*jy**2 - 25*jz**2 + 10*e_per**2*jz**2))*np.pi*np.arccos(-(1/e_per))**4)*f2**2*f3**2 + np.sqrt(1 - e_per**(-2))*e_per**2*np.pi*((-5 + 2*e_per**2)*np.pi**2 + (5 - 8*e_per**2)*np.arccos(-(1/e_per))**2)*np.arccos(-1.0/e_per)*(np.sqrt(1 - e_per**(-2))*(-50*(-1 + e_per**2)*ex**2*ey + 2*(-7 + 10*e_per**2)*ex*jx*jy + 4*(1 - 13*e_per**2)*ez*jy*jz + ey*(5*(1 + 2*e_per**2)*ez**2 - 2*(2 + e_per**2)*jx**2 + 5*(-5 + 2*e_per**2)*jz**2)) + 3*e_per*(5*ey*ez**2 - 2*ey*jx**2 + 2*ex*jx*jy - ez*jy*jz)*np.arccos(-(1/e_per)) - 15*e_per*jz*(3*ez*jy + ey*jz)*np.arccos(-1.0/e_per))*f1*f2**2*f3**2))/np.pi - 12*np.sqrt(1 - e_per**(-2))*e_per**2*ez*((-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2*np.arccos(-1.0/e_per)*(2*np.sqrt(1 - e_per**(-2))*((ey*jx - ex*jy)*jz + e_per**2*(5*ex*ey*ez + 3*ez*jx*jy - ey*jx*jz + ex*jy*jz)) + e_per*(6*ez*jx*jy + ey*jx*jz + ex*jy*jz)*np.arccos(-1.0/e_per))*f1*f2*f3*(f2*f3 + f1*(f2 + f3)) - e_per*(-5 + 2*e_per**2)*(10*ex*ey*ez - ey*jx*jz - ex*jy*jz)*np.pi**2*np.arccos(-(1/e_per))*np.arccos(-1.0/e_per)*f1*f2*f3*(f2*f3 + f1*(9*f2 + 4*f3)) - (-5 + 2*e_per**2)*np.pi**2*np.arccos(-1.0/e_per)*(2*np.sqrt(1 - e_per**(-2))*((ey*jx - ex*jy)*jz + e_per**2*(5*ex*ey*ez + 3*ez*jx*jy - ey*jx*jz + ex*jy*jz)) + e_per*(6*ez*jx*jy + ey*jx*jz + ex*jy*jz)*np.arccos(-1.0/e_per))*f1*f2*f3*(f2*f3 + f1*(9*f2 + 4*f3)) + 36*np.sqrt(1 - e_per**(-2))*(-5 + 8*e_per**2)*(4*(ey*jx - ex*jy)*jz + e_per**2*(5*ex*ey*ez + 5*ez*jx*jy - ey*jx*jz + 7*ex*jy*jz))*np.arccos(-(1/e_per))**9*(f2**2*f3**2 + f1**2*(f2**2 + f3**2)) - np.sqrt(1 - e_per**(-2))*(1320*(-(ey*jx*jz) + ex*jy*jz) + 16*e_per**4*(55*ex*ey*ez + 55*ez*jx*jy + 21*ey*jx*jz + 45*ex*jy*jz) - e_per**2*(1225*ex*ey*ez + 1225*ez*jx*jy - 1173*ey*jx*jz + 2643*ex*jy*jz))*np.pi**2*np.arccos(-(1/e_per))**7*(f2**2*f3**2 + f1**2*(9*f2**2 + 4*f3**2)) + 2*np.sqrt(1 - e_per**(-2))*(e_per**4*(85*ex*ey*ez + 85*ez*jx*jy + 111*ey*jx*jz - 9*ex*jy*jz) + 240*(-(ey*jx*jz) + ex*jy*jz) - e_per**2*(175*ex*ey*ez + 175*ez*jx*jy + 141*ey*jx*jz + 69*ex*jy*jz))*np.pi**4*np.arccos(-(1/e_per))**5*(f2**2*f3**2 + f1**2*(81*f2**2 + 16*f3**2)) + np.arccos(-(1/e_per))**3*(e_per*(-5 + 8*e_per**2)*(10*ex*ey*ez - ey*jx*jz - ex*jy*jz)*np.arccos(-1.0/e_per)*f1*f2*f3*(f2*f3 + f1*(f2 + f3)) - np.sqrt(1 - e_per**(-2))*(-5 + 2*e_per**2)*(24*(-(ey*jx) + ex*jy)*jz + e_per**2*(5*ex*ey*ez + 5*ez*jx*jy + 15*ey*jx*jz - 9*ex*jy*jz))*np.pi**6*(f2**2*f3**2 + f1**2*(729*f2**2 + 64*f3**2))))))/(2.*e_per**4*np.sqrt(ex**2 + ey**2 + ez**2)*f1**2*f2**2*f3**2)
-             
-        Delta_i = -eps_SA*((np.sqrt(1 - e_per**(-2))*(-1 + e_per**2)*(5*ex*ey - jx*jy))/e_per) \
-            + eps_SA**2*(-(np.sqrt(1 - e_per**(-2))*(-1 + e_per**2)*(np.sqrt(1 - e_per**(-2))*(10*(1 + 2*e_per**2)*ex*ez*jx + 10*(1 - 4*e_per**2)*ey*ez*jy + 5*(-5 + 8*e_per**2)*ex**2*jz + 5*(-5 + 2*e_per**2)*ey**2*jz + (-1 + 4*e_per**2)*jx**2*jz - (1 + 2*e_per**2)*jy**2*jz) - 3*e_per*(5*ex*ez*jx - 5*ey*ez*jy + (-jx**2 + jy**2)*jz)*np.arccos(-(1/e_per)) + 15*e_per*(3*ex*ez*jx + ex**2*jz - ey*(3*ez*jy + ey*jz))*np.arccos(-1.0/e_per)))/(4.*e_per**2)) \
-            + (9*eps_SA**2*np.arccos(-(1/e_per))*np.arccos(-1.0/e_per)*((-2*(-1 + e_per**2)*(5*ey*ez*jx + 5*ex*ez*jy + 5*ex*ey*jz + jx*jy*jz)*np.arccos(-(1/e_per))**3*((5 - 2*e_per**2)*np.pi**2 + (-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2)*(np.pi**4 - 13*np.pi**2*np.arccos(-(1/e_per))**2 + 36*np.arccos(-(1/e_per))**4))/f1**2 + (np.sqrt(1 - e_per**(-2))*e_per*((-5 + 2*e_per**2)*np.pi**2 + (5 - 8*e_per**2)*np.arccos(-(1/e_per))**2)*np.arccos(-1.0/e_per)*(2*np.sqrt(1 - e_per**(-2))*e_per*(5*ey*ez*jx + 5*ex*ez*jy + 5*ex*ey*jz + jx*jy*jz) + (-5*ey*ez*jx - 5*ex*ez*jy + 2*jx*jy*jz)*np.arccos(-(1/e_per)) + 5*(3*ey*ez*jx + 3*ex*ez*jy + 2*ex*ey*jz)*np.arccos(-1.0/e_per)))/f1 - (8*(-1 + e_per**2)*(5*ey*ez*jx + 5*ex*ez*jy + 5*ex*ey*jz + jx*jy*jz)*np.arccos(-(1/e_per))**3*(4*(5 - 2*e_per**2)*np.pi**2 + (-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2)*(4*np.pi**4 - 13*np.pi**2*np.arccos(-(1/e_per))**2 + 9*np.arccos(-(1/e_per))**4))/f2**2 + (np.sqrt(1 - e_per**(-2))*e_per*(4*(-5 + 2*e_per**2)*np.pi**2 + (5 - 8*e_per**2)*np.arccos(-(1/e_per))**2)*np.arccos(-1.0/e_per)*(2*np.sqrt(1 - e_per**(-2))*e_per*(5*ey*ez*jx + 5*ex*ez*jy + 5*ex*ey*jz + jx*jy*jz) + (-5*ey*ez*jx - 5*ex*ez*jy + 2*jx*jy*jz)*np.arccos(-(1/e_per)) + 5*(3*ey*ez*jx + 3*ex*ez*jy + 2*ex*ey*jz)*np.arccos(-1.0/e_per)))/f2 - (18*(-1 + e_per**2)*(5*ey*ez*jx + 5*ex*ez*jy + 5*ex*ey*jz + jx*jy*jz)*np.arccos(-(1/e_per))**3*(9*(5 - 2*e_per**2)*np.pi**2 + (-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2)*(9*np.pi**4 - 13*np.pi**2*np.arccos(-(1/e_per))**2 + 4*np.arccos(-(1/e_per))**4))/f3**2 + (np.sqrt(1 - e_per**(-2))*e_per*(9*(-5 + 2*e_per**2)*np.pi**2 + (5 - 8*e_per**2)*np.arccos(-(1/e_per))**2)*np.arccos(-1.0/e_per)*(2*np.sqrt(1 - e_per**(-2))*e_per*(5*ey*ez*jx + 5*ex*ez*jy + 5*ex*ey*jz + jx*jy*jz) + (-5*ey*ez*jx - 5*ex*ez*jy + 2*jx*jy*jz)*np.arccos(-(1/e_per)) + 5*(3*ey*ez*jx + 3*ex*ez*jy + 2*ex*ey*jz)*np.arccos(-1.0/e_per)))/f3))/e_per**2
-        Delta_i *= -(1.0/(np.sqrt(jx**2+jy**2)))
-
-        Delta_i = -ArcCos(jz/Sqrt(jx**2 + jy**2 + jz**2)) + ArcCos((jz - (Sqrt(1 - eper**(-2))*(-1 + eper**2)*(5*ex*ey - jx*jy)*eps_SA)/eper - (Sqrt(1 - eper**(-2))*(-1 + eper**2)*eps_SA**2*(Sqrt(1 - eper**(-2))*(10*(1 + 2*eper**2)*ex*ez*jx + 10*(1 - 4*eper**2)*ey*ez*jy + 5*(-5 + 8*eper**2)*ex**2*jz + 5*(-5 + 2*eper**2)*ey**2*jz + (-1 + 4*eper**2)*jx**2*jz - (1 + 2*eper**2)*jy**2*jz) - 3*eper*(5*ex*ez*jx - 5*ey*ez*jy + (-jx**2 + jy**2)*jz)*ArcCos(-(1/eper)) + 15*eper*(3*ex*ez*jx + ex**2*jz - ey*(3*ez*jy + ey*jz))*ArcCos(-1.0/eper)))/(4.*eper**2))/Sqrt((jz - (Sqrt(1 - eper**(-2))*(-1 + eper**2)*(5*ex*ey - jx*jy)*eps_SA)/eper - (Sqrt(1 - eper**(-2))*(-1 + eper**2)*eps_SA**2*(Sqrt(1 - eper**(-2))*(10*(1 + 2*eper**2)*ex*ez*jx + 10*(1 - 4*eper**2)*ey*ez*jy + 5*(-5 + 8*eper**2)*ex**2*jz + 5*(-5 + 2*eper**2)*ey**2*jz + (-1 + 4*eper**2)*jx**2*jz - (1 + 2*eper**2)*jy**2*jz) - 3*eper*(5*ex*ez*jx - 5*ey*ez*jy + (-jx**2 + jy**2)*jz)*ArcCos(-(1/eper)) + 15*eper*(3*ex*ez*jx + ex**2*jz - ey*(3*ez*jy + ey*jz))*ArcCos(-1.0/eper)))/(4.*eper**2))**2 + (jy + ((5*ex*ez - jx*jz)*eps_SA*(Sqrt(1 - eper**(-2))*(-1 + 4*eper**2) + 3*eper*ArcCos(-(1/eper))))/(2.*eper) - (eps_SA**2*(Sqrt(1 - eper**(-2))*(-1 + 4*eper**2) + 3*eper*ArcCos(-(1/eper)))*(3*eper*(-10*ex*ey*jx + 10*ex**2*jy + jz*(-5*ey*ez + jy*jz))*ArcCos(-(1/eper))*f1*f2*f3 + (Sqrt(1 - eper**(-2))*(-10*(1 + 2*eper**2)*ex*ey*jx + 10*(-2 + 5*eper**2)*ex**2*jy + 5*(-1 + 10*eper**2)*ez**2*jy + 2*(-1 + eper**2)*jx**2*jy - 20*(-1 + eper**2)*ey*ez*jz + (1 + 2*eper**2)*jy*jz**2) + 15*eper*ez*(3*ez*jy + ey*jz)*ArcCos(-1.0/eper))*f1*f2*f3 + 12*Sqrt(1 - eper**(-2))*(-5 + 8*eper**2)*(15*ex**2*jx - 20*ex*(ey*jy + ez*jz) + jx*(5*ey**2 + 5*ez**2 + jx**2 - jy**2 - jz**2))*ArcCos(-(1/eper))**5*(f2*f3 + f1*(f2 + f3)) - 12*Sqrt(1 - eper**(-2))*(-5 + 2*eper**2)*(15*ex**2*jx - 20*ex*(ey*jy + ez*jz) + jx*(5*ey**2 + 5*ez**2 + jx**2 - jy**2 - jz**2))*Pi**2*ArcCos(-(1/eper))**3*(f2*f3 + f1*(9*f2 + 4*f3))))/(8.*eper**2*f1*f2*f3))**2 + (jx - ((5*ey*ez - jy*jz)*eps_SA*(Sqrt(1 - eper**(-2))*(1 + 2*eper**2) + 3*eper*ArcCos(-(1/eper))))/(2.*eper) - (eps_SA**2*(Sqrt(1 - eper**(-2))*(1 + 2*eper**2) + 3*eper*ArcCos(-(1/eper)))*(3*eper*(10*ey**2*jx - 10*ex*ey*jy + jz*(-5*ex*ez + jx*jz))*ArcCos(-(1/eper))*f1*f2*f3 + (Sqrt(1 - eper**(-2))*(10*(2 + eper**2)*ey**2*jx + 5*ez**2*(jx + 8*eper**2*jx) + 10*(1 - 4*eper**2)*ex*ey*jy + 20*(-1 + eper**2)*ex*ez*jz - jx*(2*(-1 + eper**2)*jy**2 + (1 - 4*eper**2)*jz**2)) + 15*eper*ez*(3*ez*jx + ex*jz)*ArcCos(-1.0/eper))*f1*f2*f3 + 12*Sqrt(1 - eper**(-2))*(-5 + 8*eper**2)*(-20*ex*ey*jx + 5*ex**2*jy + 15*ey**2*jy - 20*ey*ez*jz + jy*(5*ez**2 - jx**2 + jy**2 - jz**2))*ArcCos(-(1/eper))**5*(f2*f3 + f1*(f2 + f3)) - 12*Sqrt(1 - eper**(-2))*(-5 + 2*eper**2)*(-20*ex*ey*jx + 5*ex**2*jy + 15*ey**2*jy - 20*ey*ez*jz + jy*(5*ez**2 - jx**2 + jy**2 - jz**2))*Pi**2*ArcCos(-(1/eper))**3*(f2*f3 + f1*(9*f2 + 4*f3))))/(8.*eper**2*f1*f2*f3))**2))
         
-    return Delta_e_CDA,Delta_i
+        Delta_i =  -ArcCos(jz/Sqrt(jx**2 + jy**2 + jz**2)) + ArcCos((8*jz)/Sqrt(64*jz**2 + (8*jx - 3*Pi*eps_SA*(20*ey*ez - 4*jy*jz + 3*(10*ey**2*jx + 15*ez**2*jx - 10*ex*ey*jy + jx*jz**2)*Pi*eps_SA))**2 + (8*jy - 3*Pi*eps_SA*(-20*ex*ez + 4*jx*jz + 3*(-10*ex*ey*jx + 10*ex**2*jy + 15*ez**2*jy + jy*jz**2)*Pi*eps_SA))**2))
+
+    else: ### hyperbolic orbits
+        Delta_i = -ArcCos(jz/Sqrt(jx**2 + jy**2 + jz**2)) + ArcCos((jz - (Sqrt(1 - eper**(-2))*(-1 + eper**2)*(5*ex*ey - jx*jy)*eps_SA)/eper - (Sqrt(1 - eper**(-2))*(-1 + eper**2)*eps_SA**2*(Sqrt(1 - eper**(-2))*(10*(1 + 2*eper**2)*ex*ez*jx + 10*(1 - 4*eper**2)*ey*ez*jy + 5*(-5 + 8*eper**2)*ex**2*jz + 5*(-5 + 2*eper**2)*ey**2*jz + (-1 + 4*eper**2)*jx**2*jz - (1 + 2*eper**2)*jy**2*jz) - 3*eper*(5*ex*ez*jx - 5*ey*ez*jy + (-jx**2 + jy**2)*jz)*ArcCos(-(1/eper)) + 15*eper*(3*ex*ez*jx + ex**2*jz - ey*(3*ez*jy + ey*jz))*ArcCos(-1.0/eper)))/(4.*eper**2))/Sqrt((jz - (Sqrt(1 - eper**(-2))*(-1 + eper**2)*(5*ex*ey - jx*jy)*eps_SA)/eper - (Sqrt(1 - eper**(-2))*(-1 + eper**2)*eps_SA**2*(Sqrt(1 - eper**(-2))*(10*(1 + 2*eper**2)*ex*ez*jx + 10*(1 - 4*eper**2)*ey*ez*jy + 5*(-5 + 8*eper**2)*ex**2*jz + 5*(-5 + 2*eper**2)*ey**2*jz + (-1 + 4*eper**2)*jx**2*jz - (1 + 2*eper**2)*jy**2*jz) - 3*eper*(5*ex*ez*jx - 5*ey*ez*jy + (-jx**2 + jy**2)*jz)*ArcCos(-(1/eper)) + 15*eper*(3*ex*ez*jx + ex**2*jz - ey*(3*ez*jy + ey*jz))*ArcCos(-1.0/eper)))/(4.*eper**2))**2 + (jy + ((5*ex*ez - jx*jz)*eps_SA*(Sqrt(1 - eper**(-2))*(-1 + 4*eper**2) + 3*eper*ArcCos(-(1/eper))))/(2.*eper) - (eps_SA**2*(Sqrt(1 - eper**(-2))*(-1 + 4*eper**2) + 3*eper*ArcCos(-(1/eper)))*(3*eper*(-10*ex*ey*jx + 10*ex**2*jy + jz*(-5*ey*ez + jy*jz))*ArcCos(-(1/eper))*f1*f2*f3 + (Sqrt(1 - eper**(-2))*(-10*(1 + 2*eper**2)*ex*ey*jx + 10*(-2 + 5*eper**2)*ex**2*jy + 5*(-1 + 10*eper**2)*ez**2*jy + 2*(-1 + eper**2)*jx**2*jy - 20*(-1 + eper**2)*ey*ez*jz + (1 + 2*eper**2)*jy*jz**2) + 15*eper*ez*(3*ez*jy + ey*jz)*ArcCos(-1.0/eper))*f1*f2*f3 + 12*Sqrt(1 - eper**(-2))*(-5 + 8*eper**2)*(15*ex**2*jx - 20*ex*(ey*jy + ez*jz) + jx*(5*ey**2 + 5*ez**2 + jx**2 - jy**2 - jz**2))*ArcCos(-(1/eper))**5*(f2*f3 + f1*(f2 + f3)) - 12*Sqrt(1 - eper**(-2))*(-5 + 2*eper**2)*(15*ex**2*jx - 20*ex*(ey*jy + ez*jz) + jx*(5*ey**2 + 5*ez**2 + jx**2 - jy**2 - jz**2))*Pi**2*ArcCos(-(1/eper))**3*(f2*f3 + f1*(9*f2 + 4*f3))))/(8.*eper**2*f1*f2*f3))**2 + (jx - ((5*ey*ez - jy*jz)*eps_SA*(Sqrt(1 - eper**(-2))*(1 + 2*eper**2) + 3*eper*ArcCos(-(1/eper))))/(2.*eper) - (eps_SA**2*(Sqrt(1 - eper**(-2))*(1 + 2*eper**2) + 3*eper*ArcCos(-(1/eper)))*(3*eper*(10*ey**2*jx - 10*ex*ey*jy + jz*(-5*ex*ez + jx*jz))*ArcCos(-(1/eper))*f1*f2*f3 + (Sqrt(1 - eper**(-2))*(10*(2 + eper**2)*ey**2*jx + 5*ez**2*(jx + 8*eper**2*jx) + 10*(1 - 4*eper**2)*ex*ey*jy + 20*(-1 + eper**2)*ex*ez*jz - jx*(2*(-1 + eper**2)*jy**2 + (1 - 4*eper**2)*jz**2)) + 15*eper*ez*(3*ez*jx + ex*jz)*ArcCos(-1.0/eper))*f1*f2*f3 + 12*Sqrt(1 - eper**(-2))*(-5 + 8*eper**2)*(-20*ex*ey*jx + 5*ex**2*jy + 15*ey**2*jy - 20*ey*ez*jz + jy*(5*ez**2 - jx**2 + jy**2 - jz**2))*ArcCos(-(1/eper))**5*(f2*f3 + f1*(f2 + f3)) - 12*Sqrt(1 - eper**(-2))*(-5 + 2*eper**2)*(-20*ex*ey*jx + 5*ex**2*jy + 15*ey**2*jy - 20*ey*ez*jz + jy*(5*ez**2 - jx**2 + jy**2 - jz**2))*Pi**2*ArcCos(-(1/eper))**3*(f2*f3 + f1*(9*f2 + 4*f3))))/(8.*eper**2*f1*f2*f3))**2))
+
+        if args.use_c == True:
+            Delta_e_SO = flybyslibrary.g_e_I_cdot_e_hat(eps_SA,e_per,ex,ey,ez,jx,jy,jz)
+            Delta_e_SO += flybyslibrary.g_e_II_cdot_e_hat(eps_SA,e_per,ex,ey,ez,jx,jy,jz)
+        else:
+            exn = ex + (eps_SA*(np.sqrt(1 - e_per**(-2))*(ez*(jy - 10*e_per**2*jy) + (-5 + 2*e_per**2)*ey*jz) - 3*e_per*(3*ez*jy + ey*jz)*np.arccos(-1.0/e_per)))/(4.*e_per) - (3*np.sqrt(1 - e_per**(-2))*(ez*jx - 5*ex*jz)*eps_SA*np.arccos(-(1/e_per))**3*((-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2*(f2*f3 + f1*(f2 + f3)) - (-5 + 2*e_per**2)*np.pi**2*(f2*f3 + f1*(9*f2 + 4*f3))))/(e_per*f1*f2*f3)
+            eyn = ey + (eps_SA*(np.sqrt(1 - e_per**(-2))*(ez*(jx + 8*e_per**2*jx) + (-5 + 8*e_per**2)*ex*jz) + 3*e_per*(3*ez*jx + ex*jz)*np.arccos(-1.0/e_per)))/(4.*e_per) + (3*np.sqrt(1 - e_per**(-2))*(ez*jy - 5*ey*jz)*eps_SA*np.arccos(-(1/e_per))**3*((-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2*(f2*f3 + f1*(f2 + f3)) - (-5 + 2*e_per**2)*np.pi**2*(f2*f3 + f1*(9*f2 + 4*f3))))/(e_per*f1*f2*f3)
+            ezn = ez + (np.sqrt(1 - e_per**(-2))*((2 + e_per**2)*ey*jx + (2 - 5*e_per**2)*ex*jy)*eps_SA + 3*e_per*(ey*jx - ex*jy)*eps_SA*np.arccos(-(1/e_per)))/(2.*e_per) - (12*np.sqrt(1 - e_per**(-2))*(ex*jx - ey*jy)*eps_SA*np.arccos(-(1/e_per))**3*((-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2*(f2*f3 + f1*(f2 + f3)) - (-5 + 2*e_per**2)*np.pi**2*(f2*f3 + f1*(9*f2 + 4*f3))))/(e_per*f1*f2*f3)
+            jxn = jx - ((5*ey*ez - jy*jz)*eps_SA*(np.sqrt(1 - e_per**(-2))*(1 + 2*e_per**2) + 3*e_per*np.arccos(-(1/e_per))))/(4.*e_per) + (3*np.sqrt(1 - e_per**(-2))*(5*ex*ez - jx*jz)*eps_SA*np.arccos(-(1/e_per))**3*((-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2*(f2*f3 + f1*(f2 + f3)) - (-5 + 2*e_per**2)*np.pi**2*(f2*f3 + f1*(9*f2 + 4*f3))))/(e_per*f1*f2*f3)
+            jyn = jy + ((5*ex*ez - jx*jz)*eps_SA*(np.sqrt(1 - e_per**(-2))*(-1 + 4*e_per**2) + 3*e_per*np.arccos(-(1/e_per))))/(4.*e_per) - (3*np.sqrt(1 - e_per**(-2))*(5*ey*ez - jy*jz)*eps_SA*np.arccos(-(1/e_per))**3*((-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2*(f2*f3 + f1*(f2 + f3)) - (-5 + 2*e_per**2)*np.pi**2*(f2*f3 + f1*(9*f2 + 4*f3))))/(e_per*f1*f2*f3)
+            jzn = jz - (np.sqrt(1 - e_per**(-2))*(-1 + e_per**2)*(5*ex*ey - jx*jy)*eps_SA)/(2.*e_per) - (3*np.sqrt(1 - e_per**(-2))*(5*ex**2 - 5*ey**2 - jx**2 + jy**2)*eps_SA*np.arccos(-(1/e_per))**3*((-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2*(f2*f3 + f1*(f2 + f3)) - (-5 + 2*e_per**2)*np.pi**2*(f2*f3 + f1*(9*f2 + 4*f3))))/(e_per*f1*f2*f3)
+
+            Delta_e_SO = compute_FO_prediction(args,eps_SA,e_per,exn,eyn,ezn,jxn,jyn,jzn)[0]
+
+            lmax=3
+            if lmax==1:
+                Delta_e_SO += (3*eps_SA**2*np.arccos(-(1/e_per))*((5 - 2*e_per**2)*np.pi**2 + (-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2)*np.arccos(-1.0/e_per)*(60*(-1 + e_per**2)*((-1 + e_per**2)*ex**2*jx*jy + ey**2*jx*jy - e_per**2*ez**2*jx*jy - 2*(-2 + e_per**2)*ey*ez*jx*jz + 2*(-2 + e_per**2)*ex*ez*jy*jz + ex*ey*(-((-1 + e_per**2)*jx**2) - jy**2 + e_per**2*jz**2))*np.pi**4*np.arccos(-(1/e_per))**3 - 60*(-1 + e_per**2)*((5 + 7*e_per**2)*ex**2*jx*jy + (-5 + 6*e_per**2)*ey**2*jx*jy - 13*e_per**2*ez**2*jx*jy - 2*(10 + e_per**2)*ey*ez*jx*jz + 2*(10 + e_per**2)*ex*ez*jy*jz + ex*ey*(-((5 + 7*e_per**2)*jx**2) + (5 - 6*e_per**2)*jy**2 + 13*e_per**2*jz**2))*np.pi**2*np.arccos(-(1/e_per))**5 + 360*(-1 + e_per**2)*((1 + 2*e_per**2)*ex**2*jx*jy + (-1 + 4*e_per**2)*ey**2*jx*jy - 6*e_per**2*ez**2*jx*jy + 4*(-1 + e_per**2)*ey*ez*jx*jz - 4*(-1 + e_per**2)*ex*ez*jy*jz + ex*ey*(-((1 + 2*e_per**2)*jx**2) + (1 - 4*e_per**2)*jy**2 + 6*e_per**2*jz**2))*np.arccos(-(1/e_per))**7 - 3*np.sqrt(1 - e_per**(-2))*e_per**3*(2*ex**2*jx*jy + ey*jx*(2*ey*jy - 5*ez*jz) + ex*(50*ey*ez**2 - 2*ey*(jx**2 + jy**2) - 5*ez*jy*jz))*np.arccos(-(1/e_per))*np.arccos(-1.0/e_per)*f1 + np.arccos(-1.0/e_per)*(2*(-1 + e_per**2)*(25*(-1 + e_per**2)*ex**3*ey + (7 - 10*e_per**2)*ex**2*jx*jy + jx*((-7 + 4*e_per**2)*ey**2*jy - 36*e_per**2*ez**2*jy + 2*(-5 + 17*e_per**2)*ey*ez*jz) + ex*(-25*(-1 + e_per**2)*ey**3 + 2*ey*(jx**2 - jy**2) + 2*(5 + 7*e_per**2)*ez*jy*jz + e_per**2*ey*(-75*ez**2 + jx**2 + 5*jy**2 + 15*jz**2))) - 3*np.sqrt(1 - e_per**(-2))*e_per**3*(24*ez**2*jx*jy - 11*ez*(ey*jx + ex*jy)*jz - 10*ex*ey*jz**2)*np.arccos(-1.0/e_per))*f1))/(2.*e_per**4*np.sqrt(ex**2 + ey**2 + ez**2)*f1**2)
+            if lmax==2:
+                Delta_e_SO += (3*eps_SA**2*np.arccos(-(1/e_per))*np.arccos(-1.0/e_per)*((ey*(-12*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*(4*(5 - 2*e_per**2)*np.pi**3 + (-5 + 8*e_per**2)*np.pi*np.arccos(-(1/e_per))**2)*(-8*(2*jx*((7 - 4*e_per**2)*ey*jy + (-2 + 5*e_per**2)*ez*jz) + ex*(25*(-2 + e_per**2)*ey**2 - 5*ez**2 + 4*jy**2 - e_per**2*jy**2 + 25*jz**2 - 10*e_per**2*jz**2))*np.pi**4 + 2*(2*jx*(-5*(7 + 2*e_per**2)*ey*jy + (10 + 53*e_per**2)*ez*jz) + ex*(25*(10 + e_per**2)*ey**2 - 5*(-5 + 6*e_per**2)*ez**2 - 20*jy**2 + 11*e_per**2*jy**2 - 125*jz**2 + 20*e_per**2*jz**2))*np.pi**2*np.arccos(-(1/e_per))**2 + 3*(-2*jx*((-7 + 4*e_per**2)*ey*jy + 2*(1 + 11*e_per**2)*ez*jz) + ex*(50*(-1 + e_per**2)*ey**2 + 5*(-1 + 4*e_per**2)*ez**2 + 4*jy**2 - 10*e_per**2*jy**2 + 25*jz**2 - 40*e_per**2*jz**2))*np.arccos(-(1/e_per))**4)*f1**2 - 12*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*(4*(5 - 2*e_per**2)*np.pi**2 + (-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2)*(-8*(5*(-5 + 2*e_per**2)*ex**3 + 4*jx*((-1 + 2*e_per**2)*ey*jy - ez*jz) + ex*(-5*(-5 + 2*e_per**2)*ey**2 + 5*(-1 + 2*e_per**2)*ez**2 + 9*jx**2 - 10*e_per**2*jx**2 - 5*jy**2 + 2*e_per**2*jy**2 + 25*jz**2 - 10*e_per**2*jz**2))*np.pi**5 + 2*(-5*(-25 + 4*e_per**2)*ex**3 + 4*jx*(5*ey*(jy + 4*e_per**2*jy) + (5 - 6*e_per**2)*ez*jz) + ex*(5*(-25 + 4*e_per**2)*ey**2 + 25*(1 + 4*e_per**2)*ez**2 - 45*jx**2 - 76*e_per**2*jx**2 + 25*jy**2 - 4*e_per**2*jy**2 - 125*jz**2 + 20*e_per**2*jz**2))*np.pi**3*np.arccos(-(1/e_per))**2 + 3*(5*(-5 + 8*e_per**2)*ex**3 - 4*jx*(ey*(jy + 8*e_per**2*jy) + (1 - 4*e_per**2)*ez*jz) + ex*(-5*(-5 + 8*e_per**2)*ey**2 - 5*(1 + 8*e_per**2)*ez**2 + 9*jx**2 + 24*e_per**2*jx**2 - 5*jy**2 + 8*e_per**2*jy**2 + 25*jz**2 - 40*e_per**2*jz**2))*np.pi*np.arccos(-(1/e_per))**4)*f1**2 + np.sqrt(1 - e_per**(-2))*e_per**2*np.pi*(4*(-5 + 2*e_per**2)*np.pi**2 + (5 - 8*e_per**2)*np.arccos(-(1/e_per))**2)*np.arccos(-1.0/e_per)*(np.sqrt(1 - e_per**(-2))*(-2*jx*((-7 + 4*e_per**2)*ey*jy + 2*(1 + 11*e_per**2)*ez*jz) + ex*(50*(-1 + e_per**2)*ey**2 + 5*(-1 + 4*e_per**2)*ez**2 + 4*jy**2 - 10*e_per**2*jy**2 + 25*jz**2 - 40*e_per**2*jz**2)) + 3*e_per*(5*ex*ez**2 + 2*ey*jx*jy - 2*ex*jy**2 - ez*jx*jz)*np.arccos(-(1/e_per)) - 15*e_per*jz*(3*ez*jx + ex*jz)*np.arccos(-1.0/e_per))*f1**2*f2 - 6*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*((5 - 2*e_per**2)*np.pi**3 + (-5 + 8*e_per**2)*np.pi*np.arccos(-(1/e_per))**2)*((2*jx*((-7 + 4*e_per**2)*ey*jy + (2 - 5*e_per**2)*ez*jz) + ex*(-25*(-2 + e_per**2)*ey**2 + 5*ez**2 - 4*jy**2 + e_per**2*jy**2 - 25*jz**2 + 10*e_per**2*jz**2))*np.pi**4 + (2*jx*(-5*(7 + 2*e_per**2)*ey*jy + (10 + 53*e_per**2)*ez*jz) + ex*(25*(10 + e_per**2)*ey**2 - 5*(-5 + 6*e_per**2)*ez**2 - 20*jy**2 + 11*e_per**2*jy**2 - 125*jz**2 + 20*e_per**2*jz**2))*np.pi**2*np.arccos(-(1/e_per))**2 + 6*(-2*jx*((-7 + 4*e_per**2)*ey*jy + 2*(1 + 11*e_per**2)*ez*jz) + ex*(50*(-1 + e_per**2)*ey**2 + 5*(-1 + 4*e_per**2)*ez**2 + 4*jy**2 - 10*e_per**2*jy**2 + 25*jz**2 - 40*e_per**2*jz**2))*np.arccos(-(1/e_per))**4)*f2**2 - 6*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*((5 - 2*e_per**2)*np.pi**2 + (-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2)*((-5*(-5 + 2*e_per**2)*ex**3 + 4*jx*(ey*(jy - 2*e_per**2*jy) + ez*jz) + ex*(5*(-5 + 2*e_per**2)*ey**2 + (5 - 10*e_per**2)*ez**2 - 9*jx**2 + 10*e_per**2*jx**2 + 5*jy**2 - 2*e_per**2*jy**2 - 25*jz**2 + 10*e_per**2*jz**2))*np.pi**5 + (-5*(-25 + 4*e_per**2)*ex**3 + 4*jx*(5*ey*(jy + 4*e_per**2*jy) + (5 - 6*e_per**2)*ez*jz) + ex*(5*(-25 + 4*e_per**2)*ey**2 + 25*(1 + 4*e_per**2)*ez**2 - 45*jx**2 - 76*e_per**2*jx**2 + 25*jy**2 - 4*e_per**2*jy**2 - 125*jz**2 + 20*e_per**2*jz**2))*np.pi**3*np.arccos(-(1/e_per))**2 + 6*(5*(-5 + 8*e_per**2)*ex**3 - 4*jx*(ey*(jy + 8*e_per**2*jy) + (1 - 4*e_per**2)*ez*jz) + ex*(-5*(-5 + 8*e_per**2)*ey**2 - 5*(1 + 8*e_per**2)*ez**2 + 9*jx**2 + 24*e_per**2*jx**2 - 5*jy**2 + 8*e_per**2*jy**2 + 25*jz**2 - 40*e_per**2*jz**2))*np.pi*np.arccos(-(1/e_per))**4)*f2**2 + np.sqrt(1 - e_per**(-2))*e_per**2*np.pi*((-5 + 2*e_per**2)*np.pi**2 + (5 - 8*e_per**2)*np.arccos(-(1/e_per))**2)*np.arccos(-1.0/e_per)*(np.sqrt(1 - e_per**(-2))*(-2*jx*((-7 + 4*e_per**2)*ey*jy + 2*(1 + 11*e_per**2)*ez*jz) + ex*(50*(-1 + e_per**2)*ey**2 + 5*(-1 + 4*e_per**2)*ez**2 + 4*jy**2 - 10*e_per**2*jy**2 + 25*jz**2 - 40*e_per**2*jz**2)) + 3*e_per*(5*ex*ez**2 + 2*ey*jx*jy - 2*ex*jy**2 - ez*jx*jz)*np.arccos(-(1/e_per)) - 15*e_per*jz*(3*ez*jx + ex*jz)*np.arccos(-1.0/e_per))*f1*f2**2))/np.pi + (ex*(12*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*(4*(5 - 2*e_per**2)*np.pi**3 + (-5 + 8*e_per**2)*np.pi*np.arccos(-(1/e_per))**2)*(-8*(25*(-2 + e_per**2)*ex**2*ey + 2*(7 - 3*e_per**2)*ex*jx*jy - 2*(2 + 3*e_per**2)*ez*jy*jz + ey*(5*(-1 + e_per**2)*ez**2 + (4 - 3*e_per**2)*jx**2 + 5*(5 - 3*e_per**2)*jz**2))*np.pi**4 + 2*(25*(10 + e_per**2)*ex**2*ey + 2*(-35 + 3*e_per**2)*ex*jx*jy + 2*(10 - 51*e_per**2)*ez*jy*jz + 5*ey*((5 + 7*e_per**2)*ez**2 - (4 + 3*e_per**2)*jx**2 - (25 + 9*e_per**2)*jz**2))*np.pi**2*np.arccos(-(1/e_per))**2 + 3*(50*(-1 + e_per**2)*ex**2*ey + 2*(7 - 10*e_per**2)*ex*jx*jy + 4*(-1 + 13*e_per**2)*ez*jy*jz + ey*(-5*(1 + 2*e_per**2)*ez**2 + 2*(2 + e_per**2)*jx**2 + 5*(5 - 2*e_per**2)*jz**2))*np.arccos(-(1/e_per))**4)*f1**2 - 12*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*(4*(5 - 2*e_per**2)*np.pi**2 + (-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2)*(-8*(5*(-5 + 3*e_per**2)*ex**2*ey - 5*(-5 + 3*e_per**2)*ey**3 + 4*(1 + e_per**2)*ex*jx*jy - 4*(-1 + e_per**2)*ez*jy*jz + ey*(5*(1 + e_per**2)*ez**2 + (5 - 3*e_per**2)*jx**2 - 9*jy**2 - e_per**2*jy**2 - 25*jz**2 + 15*e_per**2*jz**2))*np.pi**5 + 2*(5*(25 + 9*e_per**2)*ex**2*ey - 5*(25 + 9*e_per**2)*ey**3 + 4*(-5 + 19*e_per**2)*ex*jx*jy - 4*(5 + 7*e_per**2)*ez*jy*jz + ey*(5*(-5 + 19*e_per**2)*ez**2 - (25 + 9*e_per**2)*jx**2 + 45*jy**2 - 67*e_per**2*jy**2 + 125*jz**2 + 45*e_per**2*jz**2))*np.pi**3*np.arccos(-(1/e_per))**2 + 3*(5*(-5 + 2*e_per**2)*ex**2*ey - 5*(-5 + 2*e_per**2)*ey**3 + 4*(1 - 10*e_per**2)*ex*jx*jy + 4*(1 + 2*e_per**2)*ez*jy*jz + ey*((5 - 50*e_per**2)*ez**2 + (5 - 2*e_per**2)*jx**2 - 9*jy**2 + 42*e_per**2*jy**2 - 25*jz**2 + 10*e_per**2*jz**2))*np.pi*np.arccos(-(1/e_per))**4)*f1**2 + np.sqrt(1 - e_per**(-2))*e_per**2*np.pi*(4*(-5 + 2*e_per**2)*np.pi**2 + (5 - 8*e_per**2)*np.arccos(-(1/e_per))**2)*np.arccos(-1.0/e_per)*(np.sqrt(1 - e_per**(-2))*(-50*(-1 + e_per**2)*ex**2*ey + 2*(-7 + 10*e_per**2)*ex*jx*jy + 4*(1 - 13*e_per**2)*ez*jy*jz + ey*(5*(1 + 2*e_per**2)*ez**2 - 2*(2 + e_per**2)*jx**2 + 5*(-5 + 2*e_per**2)*jz**2)) + 3*e_per*(5*ey*ez**2 - 2*ey*jx**2 + 2*ex*jx*jy - ez*jy*jz)*np.arccos(-(1/e_per)) - 15*e_per*jz*(3*ez*jy + ey*jz)*np.arccos(-1.0/e_per))*f1**2*f2 + 6*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*((5 - 2*e_per**2)*np.pi**3 + (-5 + 8*e_per**2)*np.pi*np.arccos(-(1/e_per))**2)*((-25*(-2 + e_per**2)*ex**2*ey + 2*(-7 + 3*e_per**2)*ex*jx*jy + 2*(2 + 3*e_per**2)*ez*jy*jz + ey*(-5*(-1 + e_per**2)*ez**2 + (-4 + 3*e_per**2)*jx**2 + 5*(-5 + 3*e_per**2)*jz**2))*np.pi**4 + (25*(10 + e_per**2)*ex**2*ey + 2*(-35 + 3*e_per**2)*ex*jx*jy + 2*(10 - 51*e_per**2)*ez*jy*jz + 5*ey*((5 + 7*e_per**2)*ez**2 - (4 + 3*e_per**2)*jx**2 - (25 + 9*e_per**2)*jz**2))*np.pi**2*np.arccos(-(1/e_per))**2 + 6*(50*(-1 + e_per**2)*ex**2*ey + 2*(7 - 10*e_per**2)*ex*jx*jy + 4*(-1 + 13*e_per**2)*ez*jy*jz + ey*(-5*(1 + 2*e_per**2)*ez**2 + 2*(2 + e_per**2)*jx**2 + 5*(5 - 2*e_per**2)*jz**2))*np.arccos(-(1/e_per))**4)*f2**2 - 6*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*((5 - 2*e_per**2)*np.pi**2 + (-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2)*((-5*(-5 + 3*e_per**2)*ex**2*ey + 5*(-5 + 3*e_per**2)*ey**3 - 4*(1 + e_per**2)*ex*jx*jy + 4*(-1 + e_per**2)*ez*jy*jz + ey*(-5*(1 + e_per**2)*ez**2 + (-5 + 3*e_per**2)*jx**2 + 9*jy**2 + e_per**2*jy**2 + 25*jz**2 - 15*e_per**2*jz**2))*np.pi**5 + (5*(25 + 9*e_per**2)*ex**2*ey - 5*(25 + 9*e_per**2)*ey**3 + 4*(-5 + 19*e_per**2)*ex*jx*jy - 4*(5 + 7*e_per**2)*ez*jy*jz + ey*(5*(-5 + 19*e_per**2)*ez**2 - (25 + 9*e_per**2)*jx**2 + 45*jy**2 - 67*e_per**2*jy**2 + 125*jz**2 + 45*e_per**2*jz**2))*np.pi**3*np.arccos(-(1/e_per))**2 + 6*(5*(-5 + 2*e_per**2)*ex**2*ey - 5*(-5 + 2*e_per**2)*ey**3 + 4*(1 - 10*e_per**2)*ex*jx*jy + 4*(1 + 2*e_per**2)*ez*jy*jz + ey*((5 - 50*e_per**2)*ez**2 + (5 - 2*e_per**2)*jx**2 - 9*jy**2 + 42*e_per**2*jy**2 - 25*jz**2 + 10*e_per**2*jz**2))*np.pi*np.arccos(-(1/e_per))**4)*f2**2 + np.sqrt(1 - e_per**(-2))*e_per**2*np.pi*((-5 + 2*e_per**2)*np.pi**2 + (5 - 8*e_per**2)*np.arccos(-(1/e_per))**2)*np.arccos(-1.0/e_per)*(np.sqrt(1 - e_per**(-2))*(-50*(-1 + e_per**2)*ex**2*ey + 2*(-7 + 10*e_per**2)*ex*jx*jy + 4*(1 - 13*e_per**2)*ez*jy*jz + ey*(5*(1 + 2*e_per**2)*ez**2 - 2*(2 + e_per**2)*jx**2 + 5*(-5 + 2*e_per**2)*jz**2)) + 3*e_per*(5*ey*ez**2 - 2*ey*jx**2 + 2*ex*jx*jy - ez*jy*jz)*np.arccos(-(1/e_per)) - 15*e_per*jz*(3*ez*jy + ey*jz)*np.arccos(-1.0/e_per))*f1*f2**2))/np.pi - 12*np.sqrt(1 - e_per**(-2))*e_per**2*ez*((-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2*np.arccos(-1.0/e_per)*(2*np.sqrt(1 - e_per**(-2))*((ey*jx - ex*jy)*jz + e_per**2*(5*ex*ey*ez + 3*ez*jx*jy - ey*jx*jz + ex*jy*jz)) + e_per*(6*ez*jx*jy + ey*jx*jz + ex*jy*jz)*np.arccos(-1.0/e_per))*f1*f2*(f1 + f2) - e_per*(-5 + 2*e_per**2)*(10*ex*ey*ez - ey*jx*jz - ex*jy*jz)*np.pi**2*np.arccos(-(1/e_per))*np.arccos(-1.0/e_per)*f1*f2*(4*f1 + f2) - (-5 + 2*e_per**2)*np.pi**2*np.arccos(-1.0/e_per)*(2*np.sqrt(1 - e_per**(-2))*((ey*jx - ex*jy)*jz + e_per**2*(5*ex*ey*ez + 3*ez*jx*jy - ey*jx*jz + ex*jy*jz)) + e_per*(6*ez*jx*jy + ey*jx*jz + ex*jy*jz)*np.arccos(-1.0/e_per))*f1*f2*(4*f1 + f2) + 36*np.sqrt(1 - e_per**(-2))*(-5 + 8*e_per**2)*(4*(ey*jx - ex*jy)*jz + e_per**2*(5*ex*ey*ez + 5*ez*jx*jy - ey*jx*jz + 7*ex*jy*jz))*np.arccos(-(1/e_per))**9*(f1**2 + f2**2) - np.sqrt(1 - e_per**(-2))*(1320*(-(ey*jx*jz) + ex*jy*jz) + 16*e_per**4*(55*ex*ey*ez + 55*ez*jx*jy + 21*ey*jx*jz + 45*ex*jy*jz) - e_per**2*(1225*ex*ey*ez + 1225*ez*jx*jy - 1173*ey*jx*jz + 2643*ex*jy*jz))*np.pi**2*np.arccos(-(1/e_per))**7*(4*f1**2 + f2**2) + 2*np.sqrt(1 - e_per**(-2))*(e_per**4*(85*ex*ey*ez + 85*ez*jx*jy + 111*ey*jx*jz - 9*ex*jy*jz) + 240*(-(ey*jx*jz) + ex*jy*jz) - e_per**2*(175*ex*ey*ez + 175*ez*jx*jy + 141*ey*jx*jz + 69*ex*jy*jz))*np.pi**4*np.arccos(-(1/e_per))**5*(16*f1**2 + f2**2) + np.arccos(-(1/e_per))**3*(e_per*(-5 + 8*e_per**2)*(10*ex*ey*ez - ey*jx*jz - ex*jy*jz)*np.arccos(-1.0/e_per)*f1*f2*(f1 + f2) - np.sqrt(1 - e_per**(-2))*(-5 + 2*e_per**2)*(24*(-(ey*jx) + ex*jy)*jz + e_per**2*(5*ex*ey*ez + 5*ez*jx*jy + 15*ey*jx*jz - 9*ex*jy*jz))*np.pi**6*(64*f1**2 + f2**2)))))/(2.*e_per**4*np.sqrt(ex**2 + ey**2 + ez**2)*f1**2*f2**2)
+            if lmax==3:
+                Delta_e_SO += (3*eps_SA**2*np.arccos(-(1/e_per))*np.arccos(-1.0/e_per)*((ey*(-18*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*(9*(5 - 2*e_per**2)*np.pi**3 + (-5 + 8*e_per**2)*np.pi*np.arccos(-(1/e_per))**2)*(-27*(2*jx*((7 - 4*e_per**2)*ey*jy + (-2 + 5*e_per**2)*ez*jz) + ex*(25*(-2 + e_per**2)*ey**2 - 5*ez**2 + 4*jy**2 - e_per**2*jy**2 + 25*jz**2 - 10*e_per**2*jz**2))*np.pi**4 + 3*(2*jx*(-5*(7 + 2*e_per**2)*ey*jy + (10 + 53*e_per**2)*ez*jz) + ex*(25*(10 + e_per**2)*ey**2 - 5*(-5 + 6*e_per**2)*ez**2 - 20*jy**2 + 11*e_per**2*jy**2 - 125*jz**2 + 20*e_per**2*jz**2))*np.pi**2*np.arccos(-(1/e_per))**2 + 2*(-2*jx*((-7 + 4*e_per**2)*ey*jy + 2*(1 + 11*e_per**2)*ez*jz) + ex*(50*(-1 + e_per**2)*ey**2 + 5*(-1 + 4*e_per**2)*ez**2 + 4*jy**2 - 10*e_per**2*jy**2 + 25*jz**2 - 40*e_per**2*jz**2))*np.arccos(-(1/e_per))**4)*f1**2*f2**2 - 18*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*(9*(5 - 2*e_per**2)*np.pi**2 + (-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2)*(-27*(5*(-5 + 2*e_per**2)*ex**3 + 4*jx*((-1 + 2*e_per**2)*ey*jy - ez*jz) + ex*(-5*(-5 + 2*e_per**2)*ey**2 + 5*(-1 + 2*e_per**2)*ez**2 + 9*jx**2 - 10*e_per**2*jx**2 - 5*jy**2 + 2*e_per**2*jy**2 + 25*jz**2 - 10*e_per**2*jz**2))*np.pi**5 - 3*(5*(-25 + 4*e_per**2)*ex**3 - 4*jx*(5*ey*(jy + 4*e_per**2*jy) + (5 - 6*e_per**2)*ez*jz) + ex*(-5*(-25 + 4*e_per**2)*ey**2 - 25*(1 + 4*e_per**2)*ez**2 + 45*jx**2 + 76*e_per**2*jx**2 - 25*jy**2 + 4*e_per**2*jy**2 + 125*jz**2 - 20*e_per**2*jz**2))*np.pi**3*np.arccos(-(1/e_per))**2 + 2*(5*(-5 + 8*e_per**2)*ex**3 - 4*jx*(ey*(jy + 8*e_per**2*jy) + (1 - 4*e_per**2)*ez*jz) + ex*(-5*(-5 + 8*e_per**2)*ey**2 - 5*(1 + 8*e_per**2)*ez**2 + 9*jx**2 + 24*e_per**2*jx**2 - 5*jy**2 + 8*e_per**2*jy**2 + 25*jz**2 - 40*e_per**2*jz**2))*np.pi*np.arccos(-(1/e_per))**4)*f1**2*f2**2 + np.sqrt(1 - e_per**(-2))*e_per**2*np.pi*(9*(-5 + 2*e_per**2)*np.pi**2 + (5 - 8*e_per**2)*np.arccos(-(1/e_per))**2)*np.arccos(-1.0/e_per)*(np.sqrt(1 - e_per**(-2))*(-2*jx*((-7 + 4*e_per**2)*ey*jy + 2*(1 + 11*e_per**2)*ez*jz) + ex*(50*(-1 + e_per**2)*ey**2 + 5*(-1 + 4*e_per**2)*ez**2 + 4*jy**2 - 10*e_per**2*jy**2 + 25*jz**2 - 40*e_per**2*jz**2)) + 3*e_per*(5*ex*ez**2 + 2*ey*jx*jy - 2*ex*jy**2 - ez*jx*jz)*np.arccos(-(1/e_per)) - 15*e_per*jz*(3*ez*jx + ex*jz)*np.arccos(-1.0/e_per))*f1**2*f2**2*f3 - 12*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*(4*(5 - 2*e_per**2)*np.pi**3 + (-5 + 8*e_per**2)*np.pi*np.arccos(-(1/e_per))**2)*(-8*(2*jx*((7 - 4*e_per**2)*ey*jy + (-2 + 5*e_per**2)*ez*jz) + ex*(25*(-2 + e_per**2)*ey**2 - 5*ez**2 + 4*jy**2 - e_per**2*jy**2 + 25*jz**2 - 10*e_per**2*jz**2))*np.pi**4 + 2*(2*jx*(-5*(7 + 2*e_per**2)*ey*jy + (10 + 53*e_per**2)*ez*jz) + ex*(25*(10 + e_per**2)*ey**2 - 5*(-5 + 6*e_per**2)*ez**2 - 20*jy**2 + 11*e_per**2*jy**2 - 125*jz**2 + 20*e_per**2*jz**2))*np.pi**2*np.arccos(-(1/e_per))**2 + 3*(-2*jx*((-7 + 4*e_per**2)*ey*jy + 2*(1 + 11*e_per**2)*ez*jz) + ex*(50*(-1 + e_per**2)*ey**2 + 5*(-1 + 4*e_per**2)*ez**2 + 4*jy**2 - 10*e_per**2*jy**2 + 25*jz**2 - 40*e_per**2*jz**2))*np.arccos(-(1/e_per))**4)*f1**2*f3**2 - 12*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*(4*(5 - 2*e_per**2)*np.pi**2 + (-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2)*(-8*(5*(-5 + 2*e_per**2)*ex**3 + 4*jx*((-1 + 2*e_per**2)*ey*jy - ez*jz) + ex*(-5*(-5 + 2*e_per**2)*ey**2 + 5*(-1 + 2*e_per**2)*ez**2 + 9*jx**2 - 10*e_per**2*jx**2 - 5*jy**2 + 2*e_per**2*jy**2 + 25*jz**2 - 10*e_per**2*jz**2))*np.pi**5 + 2*(-5*(-25 + 4*e_per**2)*ex**3 + 4*jx*(5*ey*(jy + 4*e_per**2*jy) + (5 - 6*e_per**2)*ez*jz) + ex*(5*(-25 + 4*e_per**2)*ey**2 + 25*(1 + 4*e_per**2)*ez**2 - 45*jx**2 - 76*e_per**2*jx**2 + 25*jy**2 - 4*e_per**2*jy**2 - 125*jz**2 + 20*e_per**2*jz**2))*np.pi**3*np.arccos(-(1/e_per))**2 + 3*(5*(-5 + 8*e_per**2)*ex**3 - 4*jx*(ey*(jy + 8*e_per**2*jy) + (1 - 4*e_per**2)*ez*jz) + ex*(-5*(-5 + 8*e_per**2)*ey**2 - 5*(1 + 8*e_per**2)*ez**2 + 9*jx**2 + 24*e_per**2*jx**2 - 5*jy**2 + 8*e_per**2*jy**2 + 25*jz**2 - 40*e_per**2*jz**2))*np.pi*np.arccos(-(1/e_per))**4)*f1**2*f3**2 + np.sqrt(1 - e_per**(-2))*e_per**2*np.pi*(4*(-5 + 2*e_per**2)*np.pi**2 + (5 - 8*e_per**2)*np.arccos(-(1/e_per))**2)*np.arccos(-1.0/e_per)*(np.sqrt(1 - e_per**(-2))*(-2*jx*((-7 + 4*e_per**2)*ey*jy + 2*(1 + 11*e_per**2)*ez*jz) + ex*(50*(-1 + e_per**2)*ey**2 + 5*(-1 + 4*e_per**2)*ez**2 + 4*jy**2 - 10*e_per**2*jy**2 + 25*jz**2 - 40*e_per**2*jz**2)) + 3*e_per*(5*ex*ez**2 + 2*ey*jx*jy - 2*ex*jy**2 - ez*jx*jz)*np.arccos(-(1/e_per)) - 15*e_per*jz*(3*ez*jx + ex*jz)*np.arccos(-1.0/e_per))*f1**2*f2*f3**2 - 6*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*((5 - 2*e_per**2)*np.pi**3 + (-5 + 8*e_per**2)*np.pi*np.arccos(-(1/e_per))**2)*((2*jx*((-7 + 4*e_per**2)*ey*jy + (2 - 5*e_per**2)*ez*jz) + ex*(-25*(-2 + e_per**2)*ey**2 + 5*ez**2 - 4*jy**2 + e_per**2*jy**2 - 25*jz**2 + 10*e_per**2*jz**2))*np.pi**4 + (2*jx*(-5*(7 + 2*e_per**2)*ey*jy + (10 + 53*e_per**2)*ez*jz) + ex*(25*(10 + e_per**2)*ey**2 - 5*(-5 + 6*e_per**2)*ez**2 - 20*jy**2 + 11*e_per**2*jy**2 - 125*jz**2 + 20*e_per**2*jz**2))*np.pi**2*np.arccos(-(1/e_per))**2 + 6*(-2*jx*((-7 + 4*e_per**2)*ey*jy + 2*(1 + 11*e_per**2)*ez*jz) + ex*(50*(-1 + e_per**2)*ey**2 + 5*(-1 + 4*e_per**2)*ez**2 + 4*jy**2 - 10*e_per**2*jy**2 + 25*jz**2 - 40*e_per**2*jz**2))*np.arccos(-(1/e_per))**4)*f2**2*f3**2 - 6*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*((5 - 2*e_per**2)*np.pi**2 + (-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2)*((-5*(-5 + 2*e_per**2)*ex**3 + 4*jx*(ey*(jy - 2*e_per**2*jy) + ez*jz) + ex*(5*(-5 + 2*e_per**2)*ey**2 + (5 - 10*e_per**2)*ez**2 - 9*jx**2 + 10*e_per**2*jx**2 + 5*jy**2 - 2*e_per**2*jy**2 - 25*jz**2 + 10*e_per**2*jz**2))*np.pi**5 + (-5*(-25 + 4*e_per**2)*ex**3 + 4*jx*(5*ey*(jy + 4*e_per**2*jy) + (5 - 6*e_per**2)*ez*jz) + ex*(5*(-25 + 4*e_per**2)*ey**2 + 25*(1 + 4*e_per**2)*ez**2 - 45*jx**2 - 76*e_per**2*jx**2 + 25*jy**2 - 4*e_per**2*jy**2 - 125*jz**2 + 20*e_per**2*jz**2))*np.pi**3*np.arccos(-(1/e_per))**2 + 6*(5*(-5 + 8*e_per**2)*ex**3 - 4*jx*(ey*(jy + 8*e_per**2*jy) + (1 - 4*e_per**2)*ez*jz) + ex*(-5*(-5 + 8*e_per**2)*ey**2 - 5*(1 + 8*e_per**2)*ez**2 + 9*jx**2 + 24*e_per**2*jx**2 - 5*jy**2 + 8*e_per**2*jy**2 + 25*jz**2 - 40*e_per**2*jz**2))*np.pi*np.arccos(-(1/e_per))**4)*f2**2*f3**2 + np.sqrt(1 - e_per**(-2))*e_per**2*np.pi*((-5 + 2*e_per**2)*np.pi**2 + (5 - 8*e_per**2)*np.arccos(-(1/e_per))**2)*np.arccos(-1.0/e_per)*(np.sqrt(1 - e_per**(-2))*(-2*jx*((-7 + 4*e_per**2)*ey*jy + 2*(1 + 11*e_per**2)*ez*jz) + ex*(50*(-1 + e_per**2)*ey**2 + 5*(-1 + 4*e_per**2)*ez**2 + 4*jy**2 - 10*e_per**2*jy**2 + 25*jz**2 - 40*e_per**2*jz**2)) + 3*e_per*(5*ex*ez**2 + 2*ey*jx*jy - 2*ex*jy**2 - ez*jx*jz)*np.arccos(-(1/e_per)) - 15*e_per*jz*(3*ez*jx + ex*jz)*np.arccos(-1.0/e_per))*f1*f2**2*f3**2))/np.pi + (ex*(18*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*(9*(5 - 2*e_per**2)*np.pi**3 + (-5 + 8*e_per**2)*np.pi*np.arccos(-(1/e_per))**2)*(-27*(25*(-2 + e_per**2)*ex**2*ey + 2*(7 - 3*e_per**2)*ex*jx*jy - 2*(2 + 3*e_per**2)*ez*jy*jz + ey*(5*(-1 + e_per**2)*ez**2 + (4 - 3*e_per**2)*jx**2 + 5*(5 - 3*e_per**2)*jz**2))*np.pi**4 + 3*(25*(10 + e_per**2)*ex**2*ey + 2*(-35 + 3*e_per**2)*ex*jx*jy + 2*(10 - 51*e_per**2)*ez*jy*jz + 5*ey*((5 + 7*e_per**2)*ez**2 - (4 + 3*e_per**2)*jx**2 - (25 + 9*e_per**2)*jz**2))*np.pi**2*np.arccos(-(1/e_per))**2 + 2*(50*(-1 + e_per**2)*ex**2*ey + 2*(7 - 10*e_per**2)*ex*jx*jy + 4*(-1 + 13*e_per**2)*ez*jy*jz + ey*(-5*(1 + 2*e_per**2)*ez**2 + 2*(2 + e_per**2)*jx**2 + 5*(5 - 2*e_per**2)*jz**2))*np.arccos(-(1/e_per))**4)*f1**2*f2**2 - 18*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*(9*(5 - 2*e_per**2)*np.pi**2 + (-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2)*(-27*(5*(-5 + 3*e_per**2)*ex**2*ey - 5*(-5 + 3*e_per**2)*ey**3 + 4*(1 + e_per**2)*ex*jx*jy - 4*(-1 + e_per**2)*ez*jy*jz + ey*(5*(1 + e_per**2)*ez**2 + (5 - 3*e_per**2)*jx**2 - 9*jy**2 - e_per**2*jy**2 - 25*jz**2 + 15*e_per**2*jz**2))*np.pi**5 + 3*(5*(25 + 9*e_per**2)*ex**2*ey - 5*(25 + 9*e_per**2)*ey**3 + 4*(-5 + 19*e_per**2)*ex*jx*jy - 4*(5 + 7*e_per**2)*ez*jy*jz + ey*(5*(-5 + 19*e_per**2)*ez**2 - (25 + 9*e_per**2)*jx**2 + 45*jy**2 - 67*e_per**2*jy**2 + 125*jz**2 + 45*e_per**2*jz**2))*np.pi**3*np.arccos(-(1/e_per))**2 + 2*(5*(-5 + 2*e_per**2)*ex**2*ey - 5*(-5 + 2*e_per**2)*ey**3 + 4*(1 - 10*e_per**2)*ex*jx*jy + 4*(1 + 2*e_per**2)*ez*jy*jz + ey*((5 - 50*e_per**2)*ez**2 + (5 - 2*e_per**2)*jx**2 - 9*jy**2 + 42*e_per**2*jy**2 - 25*jz**2 + 10*e_per**2*jz**2))*np.pi*np.arccos(-(1/e_per))**4)*f1**2*f2**2 + np.sqrt(1 - e_per**(-2))*e_per**2*np.pi*(9*(-5 + 2*e_per**2)*np.pi**2 + (5 - 8*e_per**2)*np.arccos(-(1/e_per))**2)*np.arccos(-1.0/e_per)*(np.sqrt(1 - e_per**(-2))*(-50*(-1 + e_per**2)*ex**2*ey + 2*(-7 + 10*e_per**2)*ex*jx*jy + 4*(1 - 13*e_per**2)*ez*jy*jz + ey*(5*(1 + 2*e_per**2)*ez**2 - 2*(2 + e_per**2)*jx**2 + 5*(-5 + 2*e_per**2)*jz**2)) + 3*e_per*(5*ey*ez**2 - 2*ey*jx**2 + 2*ex*jx*jy - ez*jy*jz)*np.arccos(-(1/e_per)) - 15*e_per*jz*(3*ez*jy + ey*jz)*np.arccos(-1.0/e_per))*f1**2*f2**2*f3 + 12*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*(4*(5 - 2*e_per**2)*np.pi**3 + (-5 + 8*e_per**2)*np.pi*np.arccos(-(1/e_per))**2)*(-8*(25*(-2 + e_per**2)*ex**2*ey + 2*(7 - 3*e_per**2)*ex*jx*jy - 2*(2 + 3*e_per**2)*ez*jy*jz + ey*(5*(-1 + e_per**2)*ez**2 + (4 - 3*e_per**2)*jx**2 + 5*(5 - 3*e_per**2)*jz**2))*np.pi**4 + 2*(25*(10 + e_per**2)*ex**2*ey + 2*(-35 + 3*e_per**2)*ex*jx*jy + 2*(10 - 51*e_per**2)*ez*jy*jz + 5*ey*((5 + 7*e_per**2)*ez**2 - (4 + 3*e_per**2)*jx**2 - (25 + 9*e_per**2)*jz**2))*np.pi**2*np.arccos(-(1/e_per))**2 + 3*(50*(-1 + e_per**2)*ex**2*ey + 2*(7 - 10*e_per**2)*ex*jx*jy + 4*(-1 + 13*e_per**2)*ez*jy*jz + ey*(-5*(1 + 2*e_per**2)*ez**2 + 2*(2 + e_per**2)*jx**2 + 5*(5 - 2*e_per**2)*jz**2))*np.arccos(-(1/e_per))**4)*f1**2*f3**2 - 12*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*(4*(5 - 2*e_per**2)*np.pi**2 + (-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2)*(-8*(5*(-5 + 3*e_per**2)*ex**2*ey - 5*(-5 + 3*e_per**2)*ey**3 + 4*(1 + e_per**2)*ex*jx*jy - 4*(-1 + e_per**2)*ez*jy*jz + ey*(5*(1 + e_per**2)*ez**2 + (5 - 3*e_per**2)*jx**2 - 9*jy**2 - e_per**2*jy**2 - 25*jz**2 + 15*e_per**2*jz**2))*np.pi**5 + 2*(5*(25 + 9*e_per**2)*ex**2*ey - 5*(25 + 9*e_per**2)*ey**3 + 4*(-5 + 19*e_per**2)*ex*jx*jy - 4*(5 + 7*e_per**2)*ez*jy*jz + ey*(5*(-5 + 19*e_per**2)*ez**2 - (25 + 9*e_per**2)*jx**2 + 45*jy**2 - 67*e_per**2*jy**2 + 125*jz**2 + 45*e_per**2*jz**2))*np.pi**3*np.arccos(-(1/e_per))**2 + 3*(5*(-5 + 2*e_per**2)*ex**2*ey - 5*(-5 + 2*e_per**2)*ey**3 + 4*(1 - 10*e_per**2)*ex*jx*jy + 4*(1 + 2*e_per**2)*ez*jy*jz + ey*((5 - 50*e_per**2)*ez**2 + (5 - 2*e_per**2)*jx**2 - 9*jy**2 + 42*e_per**2*jy**2 - 25*jz**2 + 10*e_per**2*jz**2))*np.pi*np.arccos(-(1/e_per))**4)*f1**2*f3**2 + np.sqrt(1 - e_per**(-2))*e_per**2*np.pi*(4*(-5 + 2*e_per**2)*np.pi**2 + (5 - 8*e_per**2)*np.arccos(-(1/e_per))**2)*np.arccos(-1.0/e_per)*(np.sqrt(1 - e_per**(-2))*(-50*(-1 + e_per**2)*ex**2*ey + 2*(-7 + 10*e_per**2)*ex*jx*jy + 4*(1 - 13*e_per**2)*ez*jy*jz + ey*(5*(1 + 2*e_per**2)*ez**2 - 2*(2 + e_per**2)*jx**2 + 5*(-5 + 2*e_per**2)*jz**2)) + 3*e_per*(5*ey*ez**2 - 2*ey*jx**2 + 2*ex*jx*jy - ez*jy*jz)*np.arccos(-(1/e_per)) - 15*e_per*jz*(3*ez*jy + ey*jz)*np.arccos(-1.0/e_per))*f1**2*f2*f3**2 + 6*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*((5 - 2*e_per**2)*np.pi**3 + (-5 + 8*e_per**2)*np.pi*np.arccos(-(1/e_per))**2)*((-25*(-2 + e_per**2)*ex**2*ey + 2*(-7 + 3*e_per**2)*ex*jx*jy + 2*(2 + 3*e_per**2)*ez*jy*jz + ey*(-5*(-1 + e_per**2)*ez**2 + (-4 + 3*e_per**2)*jx**2 + 5*(-5 + 3*e_per**2)*jz**2))*np.pi**4 + (25*(10 + e_per**2)*ex**2*ey + 2*(-35 + 3*e_per**2)*ex*jx*jy + 2*(10 - 51*e_per**2)*ez*jy*jz + 5*ey*((5 + 7*e_per**2)*ez**2 - (4 + 3*e_per**2)*jx**2 - (25 + 9*e_per**2)*jz**2))*np.pi**2*np.arccos(-(1/e_per))**2 + 6*(50*(-1 + e_per**2)*ex**2*ey + 2*(7 - 10*e_per**2)*ex*jx*jy + 4*(-1 + 13*e_per**2)*ez*jy*jz + ey*(-5*(1 + 2*e_per**2)*ez**2 + 2*(2 + e_per**2)*jx**2 + 5*(5 - 2*e_per**2)*jz**2))*np.arccos(-(1/e_per))**4)*f2**2*f3**2 - 6*(-1 + e_per**2)*np.arccos(-(1/e_per))**3*((5 - 2*e_per**2)*np.pi**2 + (-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2)*((-5*(-5 + 3*e_per**2)*ex**2*ey + 5*(-5 + 3*e_per**2)*ey**3 - 4*(1 + e_per**2)*ex*jx*jy + 4*(-1 + e_per**2)*ez*jy*jz + ey*(-5*(1 + e_per**2)*ez**2 + (-5 + 3*e_per**2)*jx**2 + 9*jy**2 + e_per**2*jy**2 + 25*jz**2 - 15*e_per**2*jz**2))*np.pi**5 + (5*(25 + 9*e_per**2)*ex**2*ey - 5*(25 + 9*e_per**2)*ey**3 + 4*(-5 + 19*e_per**2)*ex*jx*jy - 4*(5 + 7*e_per**2)*ez*jy*jz + ey*(5*(-5 + 19*e_per**2)*ez**2 - (25 + 9*e_per**2)*jx**2 + 45*jy**2 - 67*e_per**2*jy**2 + 125*jz**2 + 45*e_per**2*jz**2))*np.pi**3*np.arccos(-(1/e_per))**2 + 6*(5*(-5 + 2*e_per**2)*ex**2*ey - 5*(-5 + 2*e_per**2)*ey**3 + 4*(1 - 10*e_per**2)*ex*jx*jy + 4*(1 + 2*e_per**2)*ez*jy*jz + ey*((5 - 50*e_per**2)*ez**2 + (5 - 2*e_per**2)*jx**2 - 9*jy**2 + 42*e_per**2*jy**2 - 25*jz**2 + 10*e_per**2*jz**2))*np.pi*np.arccos(-(1/e_per))**4)*f2**2*f3**2 + np.sqrt(1 - e_per**(-2))*e_per**2*np.pi*((-5 + 2*e_per**2)*np.pi**2 + (5 - 8*e_per**2)*np.arccos(-(1/e_per))**2)*np.arccos(-1.0/e_per)*(np.sqrt(1 - e_per**(-2))*(-50*(-1 + e_per**2)*ex**2*ey + 2*(-7 + 10*e_per**2)*ex*jx*jy + 4*(1 - 13*e_per**2)*ez*jy*jz + ey*(5*(1 + 2*e_per**2)*ez**2 - 2*(2 + e_per**2)*jx**2 + 5*(-5 + 2*e_per**2)*jz**2)) + 3*e_per*(5*ey*ez**2 - 2*ey*jx**2 + 2*ex*jx*jy - ez*jy*jz)*np.arccos(-(1/e_per)) - 15*e_per*jz*(3*ez*jy + ey*jz)*np.arccos(-1.0/e_per))*f1*f2**2*f3**2))/np.pi - 12*np.sqrt(1 - e_per**(-2))*e_per**2*ez*((-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2*np.arccos(-1.0/e_per)*(2*np.sqrt(1 - e_per**(-2))*((ey*jx - ex*jy)*jz + e_per**2*(5*ex*ey*ez + 3*ez*jx*jy - ey*jx*jz + ex*jy*jz)) + e_per*(6*ez*jx*jy + ey*jx*jz + ex*jy*jz)*np.arccos(-1.0/e_per))*f1*f2*f3*(f2*f3 + f1*(f2 + f3)) - e_per*(-5 + 2*e_per**2)*(10*ex*ey*ez - ey*jx*jz - ex*jy*jz)*np.pi**2*np.arccos(-(1/e_per))*np.arccos(-1.0/e_per)*f1*f2*f3*(f2*f3 + f1*(9*f2 + 4*f3)) - (-5 + 2*e_per**2)*np.pi**2*np.arccos(-1.0/e_per)*(2*np.sqrt(1 - e_per**(-2))*((ey*jx - ex*jy)*jz + e_per**2*(5*ex*ey*ez + 3*ez*jx*jy - ey*jx*jz + ex*jy*jz)) + e_per*(6*ez*jx*jy + ey*jx*jz + ex*jy*jz)*np.arccos(-1.0/e_per))*f1*f2*f3*(f2*f3 + f1*(9*f2 + 4*f3)) + 36*np.sqrt(1 - e_per**(-2))*(-5 + 8*e_per**2)*(4*(ey*jx - ex*jy)*jz + e_per**2*(5*ex*ey*ez + 5*ez*jx*jy - ey*jx*jz + 7*ex*jy*jz))*np.arccos(-(1/e_per))**9*(f2**2*f3**2 + f1**2*(f2**2 + f3**2)) - np.sqrt(1 - e_per**(-2))*(1320*(-(ey*jx*jz) + ex*jy*jz) + 16*e_per**4*(55*ex*ey*ez + 55*ez*jx*jy + 21*ey*jx*jz + 45*ex*jy*jz) - e_per**2*(1225*ex*ey*ez + 1225*ez*jx*jy - 1173*ey*jx*jz + 2643*ex*jy*jz))*np.pi**2*np.arccos(-(1/e_per))**7*(f2**2*f3**2 + f1**2*(9*f2**2 + 4*f3**2)) + 2*np.sqrt(1 - e_per**(-2))*(e_per**4*(85*ex*ey*ez + 85*ez*jx*jy + 111*ey*jx*jz - 9*ex*jy*jz) + 240*(-(ey*jx*jz) + ex*jy*jz) - e_per**2*(175*ex*ey*ez + 175*ez*jx*jy + 141*ey*jx*jz + 69*ex*jy*jz))*np.pi**4*np.arccos(-(1/e_per))**5*(f2**2*f3**2 + f1**2*(81*f2**2 + 16*f3**2)) + np.arccos(-(1/e_per))**3*(e_per*(-5 + 8*e_per**2)*(10*ex*ey*ez - ey*jx*jz - ex*jy*jz)*np.arccos(-1.0/e_per)*f1*f2*f3*(f2*f3 + f1*(f2 + f3)) - np.sqrt(1 - e_per**(-2))*(-5 + 2*e_per**2)*(24*(-(ey*jx) + ex*jy)*jz + e_per**2*(5*ex*ey*ez + 5*ez*jx*jy + 15*ey*jx*jz - 9*ex*jy*jz))*np.pi**6*(f2**2*f3**2 + f1**2*(729*f2**2 + 64*f3**2))))))/(2.*e_per**4*np.sqrt(ex**2 + ey**2 + ez**2)*f1**2*f2**2*f3**2)
+             
+        #Delta_i = -eps_SA*((np.sqrt(1 - e_per**(-2))*(-1 + e_per**2)*(5*ex*ey - jx*jy))/e_per) \
+        #    + eps_SA**2*(-(np.sqrt(1 - e_per**(-2))*(-1 + e_per**2)*(np.sqrt(1 - e_per**(-2))*(10*(1 + 2*e_per**2)*ex*ez*jx + 10*(1 - 4*e_per**2)*ey*ez*jy + 5*(-5 + 8*e_per**2)*ex**2*jz + 5*(-5 + 2*e_per**2)*ey**2*jz + (-1 + 4*e_per**2)*jx**2*jz - (1 + 2*e_per**2)*jy**2*jz) - 3*e_per*(5*ex*ez*jx - 5*ey*ez*jy + (-jx**2 + jy**2)*jz)*np.arccos(-(1/e_per)) + 15*e_per*(3*ex*ez*jx + ex**2*jz - ey*(3*ez*jy + ey*jz))*np.arccos(-1.0/e_per)))/(4.*e_per**2)) \
+        #    + (9*eps_SA**2*np.arccos(-(1/e_per))*np.arccos(-1.0/e_per)*((-2*(-1 + e_per**2)*(5*ey*ez*jx + 5*ex*ez*jy + 5*ex*ey*jz + jx*jy*jz)*np.arccos(-(1/e_per))**3*((5 - 2*e_per**2)*np.pi**2 + (-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2)*(np.pi**4 - 13*np.pi**2*np.arccos(-(1/e_per))**2 + 36*np.arccos(-(1/e_per))**4))/f1**2 + (np.sqrt(1 - e_per**(-2))*e_per*((-5 + 2*e_per**2)*np.pi**2 + (5 - 8*e_per**2)*np.arccos(-(1/e_per))**2)*np.arccos(-1.0/e_per)*(2*np.sqrt(1 - e_per**(-2))*e_per*(5*ey*ez*jx + 5*ex*ez*jy + 5*ex*ey*jz + jx*jy*jz) + (-5*ey*ez*jx - 5*ex*ez*jy + 2*jx*jy*jz)*np.arccos(-(1/e_per)) + 5*(3*ey*ez*jx + 3*ex*ez*jy + 2*ex*ey*jz)*np.arccos(-1.0/e_per)))/f1 - (8*(-1 + e_per**2)*(5*ey*ez*jx + 5*ex*ez*jy + 5*ex*ey*jz + jx*jy*jz)*np.arccos(-(1/e_per))**3*(4*(5 - 2*e_per**2)*np.pi**2 + (-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2)*(4*np.pi**4 - 13*np.pi**2*np.arccos(-(1/e_per))**2 + 9*np.arccos(-(1/e_per))**4))/f2**2 + (np.sqrt(1 - e_per**(-2))*e_per*(4*(-5 + 2*e_per**2)*np.pi**2 + (5 - 8*e_per**2)*np.arccos(-(1/e_per))**2)*np.arccos(-1.0/e_per)*(2*np.sqrt(1 - e_per**(-2))*e_per*(5*ey*ez*jx + 5*ex*ez*jy + 5*ex*ey*jz + jx*jy*jz) + (-5*ey*ez*jx - 5*ex*ez*jy + 2*jx*jy*jz)*np.arccos(-(1/e_per)) + 5*(3*ey*ez*jx + 3*ex*ez*jy + 2*ex*ey*jz)*np.arccos(-1.0/e_per)))/f2 - (18*(-1 + e_per**2)*(5*ey*ez*jx + 5*ex*ez*jy + 5*ex*ey*jz + jx*jy*jz)*np.arccos(-(1/e_per))**3*(9*(5 - 2*e_per**2)*np.pi**2 + (-5 + 8*e_per**2)*np.arccos(-(1/e_per))**2)*(9*np.pi**4 - 13*np.pi**2*np.arccos(-(1/e_per))**2 + 4*np.arccos(-(1/e_per))**4))/f3**2 + (np.sqrt(1 - e_per**(-2))*e_per*(9*(-5 + 2*e_per**2)*np.pi**2 + (5 - 8*e_per**2)*np.arccos(-(1/e_per))**2)*np.arccos(-1.0/e_per)*(2*np.sqrt(1 - e_per**(-2))*e_per*(5*ey*ez*jx + 5*ex*ez*jy + 5*ex*ey*jz + jx*jy*jz) + (-5*ey*ez*jx - 5*ex*ez*jy + 2*jx*jy*jz)*np.arccos(-(1/e_per)) + 5*(3*ey*ez*jx + 3*ex*ez*jy + 2*ex*ey*jz)*np.arccos(-1.0/e_per)))/f3))/e_per**2
+        #Delta_i *= -(1.0/(np.sqrt(jx**2+jy**2)))
+
+    return Delta_e_SO,Delta_i
 
 
 def plot_function(args,data):
@@ -673,7 +703,8 @@ def plot_function(args,data):
             plot.set_xlabel(r"$\theta/\mathrm{deg}$",fontsize=fontsize)
         plot.set_ylabel(labels[index],fontsize=fontsize)
                 
-        plot.tick_params(axis='both', which ='major', labelsize = labelsize)
+        #plot.tick_params(axis='both', which ='major', labelsize = labelsize)
+        plot.tick_params(axis='both', which ='major', labelsize = labelsize,bottom=True, top=True, left=True, right=True)
 
         if index in [0]:
             plot.set_xticklabels([])
@@ -747,7 +778,8 @@ def plot_function_fourier(args,data):
             plot.set_xlabel(r"$\theta/\mathrm{deg}$",fontsize=fontsize)
         plot.set_ylabel(labels[index],fontsize=fontsize)
                 
-        plot.tick_params(axis='both', which ='major', labelsize = labelsize)
+        #plot.tick_params(axis='both', which ='major', labelsize = labelsize)
+        plot.tick_params(axis='both', which ='major', labelsize = labelsize,bottom=True, top=True, left=True, right=True)
 
         if index in [0]:
             plot.set_xticklabels([])
@@ -787,8 +819,8 @@ def plot_function_series(args,data_series):
     
     ex,ey,ez,jx,jy,jz = orbital_elements_to_orbital_vectors(e,i,omega,Omega)
     
-    Delta_es_DA,Delta_is_DA = [],[]
-    Delta_es_CDA,Delta_is_CDA = [],[]
+    Delta_es_FO,Delta_is_FO = [],[]
+    Delta_es_SO,Delta_is_SO = [],[]
     
     plot_Q_div_a_points = pow(10.0,np.linspace(np.log10(np.amin(Q_div_a_points)),np.log10(np.amax(Q_div_a_points)),1000))
     
@@ -797,21 +829,21 @@ def plot_function_series(args,data_series):
         eps_SA = compute_eps_SA(m,M_per,a_div_Q,e_per)
         eps_oct = compute_eps_oct(m1,m2,m,a_div_Q,e_per)
         
-        Delta_e_DA,Delta_i_DA = compute_DA_prediction(args,eps_SA,e_per,ex,ey,ez,jx,jy,jz)
-        Delta_e_CDA,Delta_i_CDA = compute_CDA_prediction(args,eps_SA,e_per,ex,ey,ez,jx,jy,jz)
+        Delta_e_FO,Delta_i_FO = compute_FO_prediction(args,eps_SA,e_per,ex,ey,ez,jx,jy,jz)
+        Delta_e_SO,Delta_i_SO = compute_SO_prediction(args,eps_SA,e_per,ex,ey,ez,jx,jy,jz)
 
         if args.include_octupole_terms == True:
-            Delta_e_oct,Delta_i_oct = compute_DA_prediction_oct(args,eps_SA,eps_oct,e_per,ex,ey,ez,jx,jy,jz)
-            Delta_e_CDA += Delta_e_oct
+            Delta_e_oct,Delta_i_oct = compute_FO_prediction_oct(args,eps_SA,eps_oct,e_per,ex,ey,ez,jx,jy,jz)
+            Delta_e_SO += Delta_e_oct
 
-        Delta_es_DA.append(Delta_e_DA)
-        Delta_es_CDA.append(Delta_e_CDA)
+        Delta_es_FO.append(Delta_e_FO)
+        Delta_es_SO.append(Delta_e_SO)
 
-        Delta_is_DA.append(Delta_i_DA)
-        Delta_is_CDA.append(Delta_i_CDA)
+        Delta_is_FO.append(Delta_i_FO)
+        Delta_is_SO.append(Delta_i_SO)
         
-        g1 = Delta_e_DA/eps_SA
-        g2 = (Delta_e_CDA-Delta_e_DA)/(eps_SA**2)
+        g1 = Delta_e_FO/eps_SA
+        g2 = (Delta_e_SO-Delta_e_FO)/(eps_SA**2)
     
     a_div_Q_crit = pow( (-g1/g2)*(np.sqrt(m*(m+M_per))/M_per),2.0/3.0)*(1.0+e_per)
     Q_div_a_crit = 1.0/a_div_Q_crit
@@ -821,10 +853,10 @@ def plot_function_series(args,data_series):
 
     Q_div_a_crit_R_unity = pow(0.5,-2.0/3.0)*pow( (1.0 + M_per/m)*(1.0 + e_per), 1.0/3.0)
 
-    Delta_es_DA = np.array(Delta_es_DA)
-    Delta_es_CDA = np.array(Delta_es_CDA)
-    Delta_is_DA = np.array(Delta_is_DA)
-    Delta_is_CDA = np.array(Delta_is_CDA)
+    Delta_es_FO = np.array(Delta_es_FO)
+    Delta_es_SO = np.array(Delta_es_SO)
+    Delta_is_FO = np.array(Delta_is_FO)
+    Delta_is_SO = np.array(Delta_is_SO)
 
     fontsize=args.fontsize
     labelsize=args.labelsize
@@ -841,7 +873,7 @@ def plot_function_series(args,data_series):
     for plot in plots:
         plot.axvline(x=Q_div_a_crit,color='k',linestyle='dotted')
         plot.axvline(x=Q_div_a_crit2,color='k',linestyle='dotted')
-        plot.axvline(x=Q_div_a_crit_R_unity,color='r',linestyle='dotted')
+        plot.axvline(x=Q_div_a_crit_R_unity,color='g',linestyle='dotted')
     
         indices_pos = [i for i in range(len(Delta_es)) if Delta_es[i] >= 0.0]
         indices_neg = [i for i in range(len(Delta_es)) if Delta_es[i] < 0.0]
@@ -857,12 +889,12 @@ def plot_function_series(args,data_series):
 
         w=2.0
         plot.axhline(y = 1.0 - e,color='k',linestyle='dotted',linewidth=w,label="$1-e$")
-        plot.plot(plot_Q_div_a_points,Delta_es_DA,color='k',linestyle='dashed',linewidth=w,label="$\mathrm{FO}$")
+        plot.plot(plot_Q_div_a_points,Delta_es_FO,color='k',linestyle='dashed',linewidth=w,label="$\mathrm{FO}$")
 
-        indices_pos = [i for i in range(len(Delta_es_CDA)) if Delta_es_CDA[i] >= 0.0]
-        indices_neg = [i for i in range(len(Delta_es_CDA)) if Delta_es_CDA[i] < 0.0]
-        plot.plot(plot_Q_div_a_points[indices_pos],Delta_es_CDA[indices_pos],color='b',linestyle='solid',linewidth=w,label="$\mathrm{SO}$")
-        plot.plot(plot_Q_div_a_points[indices_neg],-Delta_es_CDA[indices_neg],color='r',linestyle='solid',linewidth=w)    
+        indices_pos = [i for i in range(len(Delta_es_SO)) if Delta_es_SO[i] >= 0.0]
+        indices_neg = [i for i in range(len(Delta_es_SO)) if Delta_es_SO[i] < 0.0]
+        plot.plot(plot_Q_div_a_points[indices_pos],Delta_es_SO[indices_pos],color='b',linestyle='solid',linewidth=w,label="$\mathrm{SO}$")
+        plot.plot(plot_Q_div_a_points[indices_neg],-Delta_es_SO[indices_neg],color='r',linestyle='solid',linewidth=w)    
 
     if do_nbody == True:
         s=s_nbody
@@ -877,16 +909,16 @@ def plot_function_series(args,data_series):
     plot2.scatter(Q_div_a_points[indices_pos],Delta_is[indices_pos]*180.0/np.pi,color='b',s=s, facecolors='none')
     plot2.scatter(Q_div_a_points[indices_neg],-Delta_is[indices_neg]*180.0/np.pi,color='r',s=s, facecolors='none')
 
-    indices_pos = [i for i in range(len(Delta_is_DA)) if Delta_is_DA[i] >= 0.0]
-    indices_neg = [i for i in range(len(Delta_is_DA)) if Delta_is_DA[i] < 0.0]
-    plot2.plot(plot_Q_div_a_points[indices_pos],Delta_is_DA[indices_pos]*180.0/np.pi,color='b',linestyle='dashed',linewidth=w)
-    plot2.plot(plot_Q_div_a_points[indices_neg],-Delta_is_DA[indices_neg]*180.0/np.pi,color='r',linestyle='dashed',linewidth=w)
+    indices_pos = [i for i in range(len(Delta_is_FO)) if Delta_is_FO[i] >= 0.0]
+    indices_neg = [i for i in range(len(Delta_is_FO)) if Delta_is_FO[i] < 0.0]
+    plot2.plot(plot_Q_div_a_points[indices_pos],Delta_is_FO[indices_pos]*180.0/np.pi,color='b',linestyle='dashed',linewidth=w)
+    plot2.plot(plot_Q_div_a_points[indices_neg],-Delta_is_FO[indices_neg]*180.0/np.pi,color='r',linestyle='dashed',linewidth=w)
 
 
-    indices_pos = [i for i in range(len(Delta_is_CDA)) if Delta_is_CDA[i] >= 0.0]
-    indices_neg = [i for i in range(len(Delta_is_CDA)) if Delta_is_CDA[i] < 0.0]
-    plot2.plot(plot_Q_div_a_points[indices_pos],Delta_is_CDA[indices_pos]*180.0/np.pi,color='b',linestyle='solid',linewidth=w)
-    plot2.plot(plot_Q_div_a_points[indices_neg],-Delta_is_CDA[indices_neg]*180.0/np.pi,color='r',linestyle='solid',linewidth=w)
+    indices_pos = [i for i in range(len(Delta_is_SO)) if Delta_is_SO[i] >= 0.0]
+    indices_neg = [i for i in range(len(Delta_is_SO)) if Delta_is_SO[i] < 0.0]
+    plot2.plot(plot_Q_div_a_points[indices_pos],Delta_is_SO[indices_pos]*180.0/np.pi,color='b',linestyle='solid',linewidth=w)
+    plot2.plot(plot_Q_div_a_points[indices_neg],-Delta_is_SO[indices_neg]*180.0/np.pi,color='r',linestyle='solid',linewidth=w)
     
     plot1.set_ylim(1.0e-5,1.0e-1)
     plot_c.set_ylim(1.0e-5,1.0e-1)
@@ -901,20 +933,22 @@ def plot_function_series(args,data_series):
             plot.set_xlabel(r"$Q/a$",fontsize=fontsize)
         plot.set_ylabel(labels[index],fontsize=fontsize)
                 
-        plot.tick_params(axis='both', which ='major', labelsize = labelsize)
+        #plot.tick_params(axis='both', which ='major', labelsize = labelsize)
+        plot.tick_params(axis='both', which ='major', labelsize = labelsize,bottom=True, top=True, left=True, right=True)
 
         if index in [0]:
             plot.set_xticklabels([])
 
     plot_c.set_xlabel(r"$Q/a$",fontsize=fontsize)
     plot_c.set_ylabel(labels[0],fontsize=fontsize)
-    plot_c.tick_params(axis='both', which ='major', labelsize = labelsize)
+    #plot_c.tick_params(axis='both', which ='major', labelsize = labelsize)
+    plot_c.tick_params(axis='both', which ='major', labelsize = labelsize,bottom=True, top=True, left=True, right=True)
 
     for plot in [plot1,plot_c]:
         handles,labels = plot.get_legend_handles_labels()
         plot.legend(handles,labels,loc="upper right",fontsize=0.7*fontsize)
 
-        plot.set_title("$E = %s; q = %s; \, \,e=%s;\,i=%s\,\mathrm{deg};\, \omega=%s\,\mathrm{deg};\, \Omega=%s\,\mathrm{deg}$"%(args.e_per,round(args.m1/args.m2,1),args.e,round(args.i*180.0/np.pi,1),round(args.omega*180.0/np.pi,1),round(args.Omega*180.0/np.pi,1)),fontsize=0.65*fontsize)    
+        plot.set_title("$E = %s; m_1/m_2 = %s; \, \,e=%s;\,i=%s\,\mathrm{deg};\, \omega=%s\,\mathrm{deg};\, \Omega=%s\,\mathrm{deg}$"%(args.e_per,round(args.m1/args.m2,1),args.e,round(args.i*180.0/np.pi,1),round(args.omega*180.0/np.pi,1),round(args.Omega*180.0/np.pi,1)),fontsize=0.65*fontsize)    
     
     
     fig.subplots_adjust(hspace=0.0,wspace=0.0)
@@ -982,7 +1016,8 @@ def plot_function_series_detailed(args,data_series):
 
         eps_SA = compute_eps_SA(m,M_per,a_div_Q,e_per)
         
-        Delta_e_DA,Delta_i_DA = compute_DA_prediction(args,eps_SA,e_per,ex,ey,ez,jx,jy,jz)
+        Delta_e_FO,Delta_i_FO = compute_FO_prediction(args,eps_SA,e_per,ex,ey,ez,jx,jy,jz)
+
 
         label = r"$Q/a\simeq%s$"%(round(Q_div_a,1))
         color=colors[index_plot]
@@ -991,7 +1026,7 @@ def plot_function_series_detailed(args,data_series):
         plot1.plot(thetas*180.0/np.pi,es,color=color,linestyle=linestyle,linewidth=linewidth,label=label)
         plot2.plot(thetas*180.0/np.pi,np.array(incls)*180.0/np.pi,color=color,linestyle=linestyle,linewidth=linewidth,label=label)
 
-        plot1.axhline(y=e+Delta_e_DA,linestyle=linestyle,linewidth=linewidth,color='r')
+        plot1.axhline(y=e+Delta_e_FO,linestyle=linestyle,linewidth=linewidth,color='r')
         
         index_plot+=1
         
@@ -1003,7 +1038,8 @@ def plot_function_series_detailed(args,data_series):
             plot.set_xlabel(r"$\theta/\mathrm{deg}$",fontsize=fontsize)
         plot.set_ylabel(labels[index],fontsize=fontsize)
                 
-        plot.tick_params(axis='both', which ='major', labelsize = labelsize)
+        #plot.tick_params(axis='both', which ='major', labelsize = labelsize)
+        plot.tick_params(axis='both', which ='major', labelsize = labelsize,bottom=True, top=True, left=True, right=True)
 
         if index in [0]:
             plot.set_xticklabels([])
@@ -1019,7 +1055,201 @@ def plot_function_series_detailed(args,data_series):
     filename = os.path.dirname(os.path.realpath(__file__)) + '/figs/elements_time_series_' + str(args.name) + '_e_per_' + str(args.e_per) + '_e_' + str(args.e) + '_q_' + str(args.m1/args.m2) + '_Q_min_' + str(args.Q_min) + '_Q_max_' + str(args.Q_max) + '_N_Q_' + str(args.N_Q) + '.pdf'
     fig.savefig(filename,dpi=200)
 
+def f_TB_omega_function(i,omega,Omega):
+    Cos = np.cos
     
+    return (4 + 12*Cos(2*i) - 10*Cos(2*(i - omega)) + 20*Cos(2*omega) - 10*Cos(2*(i + omega)) - 20*Cos(i + 2*omega - 2*Omega) - 6*Cos(2*(i - Omega)) + 5*Cos(2*(i - omega - Omega)) + 30*Cos(2*(omega - Omega)) + 5*Cos(2*(i + omega - Omega)) + 12*Cos(2*Omega) - 6*Cos(2*(i + Omega)) + 5*Cos(2*(i - omega + Omega)) + 30*Cos(2*(omega + Omega)) + 5*Cos(2*(i + omega + Omega)) - 20*Cos(i - 2*omega + 2*Omega) + 20*Cos(i - 2*(omega + Omega)) + 20*Cos(i + 2*(omega + Omega)))
+
+def f_TB_e_function(i,omega,Omega):
+    Cos = np.cos
+    Sin = np.sin
+    
+    return (((3 + Cos(2*i))*Cos(2*Omega) + 2*Sin(i)**2)*Sin(2*omega) + 4*Cos(i)*Cos(2*omega)*Sin(2*Omega))
+    
+def plot_function_overview(args):
+
+
+
+    m = args.m
+    M_per = args.M_per
+    m1 = args.m1
+    m2 = args.m2
+    e_per = args.e_per
+    a = args.a
+    e = args.e
+    
+
+    i = args.i
+    omega = args.omega
+    Omega = args.Omega
+    #print 'test0',f_TB_omega_function(i,omega,Omega),f_TB_e_function(i,omega,Omega)
+
+    f_TB_omega = f_TB_omega_function(i,omega,Omega)
+    f_TB_e = f_TB_e_function(i,omega,Omega)
+    
+    Delta_es_DA,Delta_is_DA = [],[]
+    Delta_es_CDA,Delta_is_CDA = [],[]
+    
+    N=1000
+    e_points = 1.0 - pow(10.0,np.linspace(-6.0,-0.0,N))
+
+    
+    
+    e_per_values = [1.0,10.0]
+    m1_values = [10.0,20.0]
+    m2_values = [10.0,20.0]
+    M_per_values = [10.0,20.0]
+    a_values = [0.1,1.0]
+    linestyles = ['solid','dashed']
+    
+    plot_Q_div_a_points = pow(10.0,np.linspace(0.0,np.log10(30.0),N))
+
+    #CONST_G = 4.0*np.pi**2
+    #CONST_C = 63239.72638679138
+    CONST_G = args.G
+    CONST_C = args.c
+    fontsize=args.fontsize
+    labelsize=args.labelsize
+    
+    
+    for index_e_per, e_per in enumerate(e_per_values):
+
+
+        Q_div_a_points_sign_change = []
+        Q_div_a_points_sign_plateau = []
+        
+        Q_div_a_points_ome = []
+
+        
+        for index_e,e in enumerate(e_points):
+            eps_SA = 1.0 ### arbitrary since it is divided out below to obtain the f & g's
+
+            ex,ey,ez,jx,jy,jz = orbital_elements_to_orbital_vectors(e,i,omega,Omega)        
+            
+            Delta_e_DA,Delta_i_DA = compute_FO_prediction(args,eps_SA,e_per,ex,ey,ez,jx,jy,jz)
+            Delta_e_CDA,Delta_i_CDA = compute_SO_prediction(args,eps_SA,e_per,ex,ey,ez,jx,jy,jz)
+
+            if args.include_octupole_terms == True:
+                Delta_e_oct,Delta_i_oct = compute_FO_prediction_oct(args,eps_SA,eps_oct,e_per,ex,ey,ez,jx,jy,jz)
+                Delta_e_CDA += Delta_e_oct
+
+            f = Delta_e_DA/eps_SA
+            g = (Delta_e_CDA-Delta_e_DA)/(eps_SA**2)
+        
+            eps_SA_sign_change = -(f/g)
+            Q_div_a_sign_change = compute_Q_div_a_from_eps_SA(eps_SA_sign_change,m,M_per,e_per)
+            Q_div_a_sign_plateau = pow(2.0,2.0/3.0)*Q_div_a_sign_change
+            #print 'Q_div_a_sign_change',Q_div_a_sign_change
+            #print 'test',eps_SA_sign_change,compute_eps_SA(m,M_per,1.0/Q_div_a_sign_change,e_per)
+            
+            eps_SA_ome = (-f + np.sqrt(f**2 + 4.0*g*(1.0-e)))/(2.0*g)
+            #print 'test',eps_SA_ome*f+eps_SA_ome**2*g,1.0-e
+            Q_div_a_ome = compute_Q_div_a_from_eps_SA(eps_SA_ome,m,M_per,e_per)
+            
+            Q_div_a_points_sign_change.append(Q_div_a_sign_change)
+            Q_div_a_points_sign_plateau.append(Q_div_a_sign_plateau)
+            Q_div_a_points_ome.append(Q_div_a_ome)
+    #    Q_div_a_crit_R_unity = pow(0.5,-2.0/3.0)*pow( (1.0 + M_per/m)*(1.0 + e_per), 1.0/3.0)
+
+        Q_div_a_points_sign_change = np.array(Q_div_a_points_sign_change)
+        Q_div_a_points_sign_plateau = np.array(Q_div_a_points_sign_plateau)
+        Q_div_a_points_ome = np.array(Q_div_a_points_ome)
+        
+        Q_div_a_crit_R_unity = pow(0.5,-2.0/3.0)*pow( (1.0 + M_per/m)*(1.0 + e_per), 1.0/3.0)
+
+
+        
+        
+        fig=pyplot.figure(figsize=(8,6))
+        plot=fig.add_subplot(1,1,1,yscale="log",xscale="log")
+
+        w=2.0
+        plot.plot(Q_div_a_points_sign_change,1.0-e_points,color='k',linewidth=1.5*w,label="$\Delta e=0$",zorder=10)
+        plot.plot(Q_div_a_points_sign_plateau,1.0-e_points,color='k',linestyle='dotted',linewidth=1.5*w,label="$\mathrm{Plateau}$",zorder=10)
+        plot.axvline(x=Q_div_a_crit_R_unity,color='g',linestyle='dotted',linewidth=w)
+
+        w_values = [0.5,2.0]
+        for index_m in range(len(m1_values)):
+            w = w_values[index_m]
+            m1 = m1_values[index_m]
+            m2 = m2_values[index_m]
+            M_per = M_per_values[index_m]
+            m=m1+m2    
+        
+
+
+
+            #plot.plot(Q_div_a_points_ome,1.0-e_points,color='k',linestyle='dashed')
+            
+            
+
+            for index_system in range(len(a_values)):
+    #        m1 = m1_values[index_system]
+    #        m2 = m2_values[index_system]
+            #M_per = M_per_values[index_system]
+
+                a = a_values[index_system]
+                label1PN = "$a = %s\,\mathrm{AU\,(1PN)}$"%round(a,1)
+                label25PN = "$a = %s\,\mathrm{AU\,(2.5PN)}$"%round(a,1)
+                linestyle=linestyles[index_system]
+                
+                e_points_1PN = []
+                e_points_1PNb = []
+                e_points_25PN = []
+                for index_Q_div_a,Q_div_a in enumerate(plot_Q_div_a_points):
+                    rg = CONST_G*m/(CONST_C**2)
+                    x = (64.0/np.fabs(f_TB_omega))*(rg/a)*Q_div_a**3*(m/M_per)
+                    #print 'x',x
+                    e_1PN = np.sqrt(1.0 - pow(x,2.0/3.0))
+                    
+                    x = (272.0/(9.0*np.fabs(f_TB_e)))*(m/M_per)*(m1*m2/(m**2))*Q_div_a**3*pow(rg/a,5.0/2.0)
+                    e_25PN = np.sqrt(1.0 - pow(x,1.0/3.0))
+                    #print 'e_25PN',e_25PN
+                   
+                    xb = (rg/a)*pow(Q_div_a,3.0/2.0)*np.sqrt(m/(m+M_per))
+                    #xb = 3.0*(rg/a)*Q_div_a**3.0*(m/M_per)
+                    e_1PNb = np.sqrt(1.0 - xb)
+                    #print Q_div_a,e_1PN
+                    e_points_1PN.append(e_1PN)
+                    e_points_1PNb.append(e_1PNb)
+                    e_points_25PN.append(e_25PN)
+                    
+                e_points_1PN = np.array(e_points_1PN)
+                e_points_1PNb = np.array(e_points_1PNb)
+                e_points_25PN = np.array(e_points_25PN)
+                
+                plot.plot(plot_Q_div_a_points,1.0-e_points_1PN,color='r',linestyle=linestyle,linewidth=1.5*w,label=label1PN)
+                plot.plot(plot_Q_div_a_points,1.0-e_points_25PN,color='b',linestyle=linestyle,linewidth=0.75*w,label=label25PN)
+                #plot.plot(plot_Q_div_a_points,1.0-e_points_1PNb,color='r',linestyle='dashed',linewidth=w)
+                
+        plot.set_xlim(1.0,25.0)
+        plot.set_ylim(1e-6,1e0)
+        
+        plot.set_xlabel("$Q/a$",fontsize=fontsize)
+        plot.set_ylabel("$1-e$",fontsize=fontsize)
+
+
+        w=2.0
+                    
+        #plot.tick_params(axis='both', which ='major', labelsize = labelsize)
+        plot.tick_params(axis='both', which ='major', labelsize = labelsize,bottom=True, top=True, left=True, right=True)
+
+        #loc = "best"
+        loc = "lower left"
+        handles,labels = plot.get_legend_handles_labels()
+        plot.legend(handles,labels,loc=loc,fontsize=0.6*fontsize)
+
+        plot.axhline(y=1.0e-2,color='k',linestyle='dotted',linewidth=w,zorder=0)
+        #plot.set_title("$E = %s; m_1=%s;\,m_2=%s;\,M=%s;\,i=%s\,\mathrm{deg};\, \omega=%s\,\mathrm{deg};\, \Omega=%s\,\mathrm{deg}$"%(args.e_per,round(args.m1),round(args.m2),round(args.M_per),round(args.i*180.0/np.pi,1),round(args.omega*180.0/np.pi,1),round(args.Omega*180.0/np.pi,1)),fontsize=0.65*fontsize)    
+        #plot.set_title("$E = %s; m_1=%s\,\mathrm{M}_\odot;\,m_2=%s\,\mathrm{M}_\odot;\,M=%s\,\mathrm{M}_\odot;\,a = %s\,\mathrm{AU}$"%(args.e_per,round(m1),round(m2),round(M_per),round(a,1)),fontsize=0.65*fontsize)    
+        #plot.set_title("$E = %s; m_1=%s\,\mathrm{M}_\odot;\,m_2=%s\,\mathrm{M}_\odot;\,M=%s\,\mathrm{M}_\odot$"%(e_per,round(m1),round(m2),round(M_per)),fontsize=0.65*fontsize)    
+        plot.set_title("$E = %s; \, m_1=m_2=M; \,i=%s\,\mathrm{deg};\, \omega=%s\,\mathrm{deg};\, \Omega=%s\,\mathrm{deg}$"%(e_per,round(args.i*180.0/np.pi,1),round(args.omega*180.0/np.pi,1),round(args.Omega*180.0/np.pi,1)),fontsize=0.65*fontsize)
+        
+        fig.subplots_adjust(hspace=0.0,wspace=0.0)
+        filename = os.path.dirname(os.path.realpath(__file__)) + '/figs/overview_' + str(args.name) + '_e_per_' + str(e_per) + '_m1_' + str(m1) + '_m2_' + str(m2) + '_M_per_' + str(M_per) + '_i_' + str(i) + '.pdf'
+        fig.savefig(filename,dpi=200)
+
+
 
         
 if __name__ == '__main__':
@@ -1069,6 +1299,10 @@ if __name__ == '__main__':
                 plot_function_series(args,data_series)
             if args.mode==4:
                 plot_function_series_detailed(args,data_series)
+        
+        elif args.mode in [5]:
+            plot_function_overview(args)
+            
 
         else:
             'Incorrect plot id'
