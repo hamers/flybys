@@ -3,11 +3,10 @@
 
 
 
-/* Functions that appear in the right-hand-sides of the
- * orbit-averaged equations of motion for the `emt' model. 
- * Interfaced to Python using ctypes (uses wrapperemtlibrary.py)
+/* Second-order expressions 
+ * Interfaced to Python using ctypes (uses wrapperflybyslibrary.py)
  * Adrian Hamers
- * November 2018 */
+ * April 2019 */
 
 
 
