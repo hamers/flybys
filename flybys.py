@@ -4,7 +4,7 @@ The EOM are averaged over the binary orbit, but not over the perturber's orbit.
 Valid to the lowest expansion order in r_bin/r_per (i.e., second order or quadrupole order).
 
 Adrian Hamers
-March 2019
+April 2019
 """
 
 import argparse
@@ -34,7 +34,7 @@ def parse_arguments():
 
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--mode",                           type=int,       dest="mode",                        default=1,              help="mode -- 1: single integration; 2: single integration (illustrating Fourier series); 3: series integration; 4: series integration (with detailed time plots)")
+    parser.add_argument("--mode",                           type=int,       dest="mode",                        default=1,              help="mode -- 1: single integration; 2: single integration (illustrating Fourier series); 3: series integration; 4: series integration (with detailed time plots); 5: make overview plot of importance of SO terms.")
     parser.add_argument("--name",                           type=str,       dest="name",                        default="test01",       help="name")
     parser.add_argument("--m1",                             type=float,     dest="m1",                          default=1.0,            help="Primary mass")
     parser.add_argument("--m2",                             type=float,     dest="m2",                          default=1.0,            help="Secondary mass")
@@ -54,7 +54,7 @@ def parse_arguments():
     parser.add_argument("--theta_bin",                      type=float,     dest="theta_bin",                   default=1.0,            help="Initial binary true anomaly (3-body integration only)")
     parser.add_argument("--fraction_theta_0",               type=float,     dest="fraction_theta_0",            default=0.9,            help="Initial perturber true anomaly (3-body only), expressed as a fraction of -\arccos(-1/e_per). Default=0.9; increase if 3-body integrations do not seem converged. ")
     parser.add_argument("--G",                              type=float,     dest="G",                           default=4.0*np.pi**2,   help="Gravitational constant used in 3-body integrations. Should not affect Newtonian results. ")
-    parser.add_argument("--c",                              type=float,     dest="c",                           default=63239.72638679138, help="Speed of light. ")
+    parser.add_argument("--c",                              type=float,     dest="c",                           default=63239.72638679138, help="Speed of light (PN terms only). ")
     parser.add_argument("--fontsize",                       type=float,     dest="fontsize",                    default=22,             help="Fontsize for plots")
     parser.add_argument("--labelsize",                      type=float,     dest="labelsize",                   default=16,             help="Labelsize for plots")
 
@@ -66,7 +66,7 @@ def parse_arguments():
     add_bool_arg(parser, 'show',                            default=True,           help="Show plots")
     add_bool_arg(parser, 'include_quadrupole_terms',        default=True,           help="Include quadrupole-order terms")
     add_bool_arg(parser, 'include_octupole_terms',          default=False,          help="include octupole-order terms")
-    add_bool_arg(parser, 'include_1PN_terms',               default=False,          help="include octupole-order terms")
+    #add_bool_arg(parser, 'include_1PN_terms',               default=False,          help="include octupole-order terms") ### note: not yet working
     add_bool_arg(parser, 'do_nbody',                        default=False,          help="Do 3-body integrations as well as SA")
     add_bool_arg(parser, 'use_c',                           default=False,          help="Do 3-body integrations as well as SA")
     
@@ -126,6 +126,7 @@ def RHS_function(RHR_vec, theta, *ODE_args):
 
 
     if args.include_1PN_terms == True:
+        ### note: not yet working
         e_vec = np.array([ex,ey,ez])
         j_vec = np.array([jx,jy,jz])
         q_vec = np.cross(j_vec,e_vec)
@@ -300,9 +301,6 @@ def third_body_cartesian(G,m,M_per,Q,e_per,theta_0):
         r_per_vec[i] = r_per*(cos_true_anomaly*e_per_hat_vec[i] + sin_true_anomaly*q_per_hat_vec[i])
         r_dot_per_vec[i] = r_dot_factor*( -sin_true_anomaly*e_per_hat_vec[i] + (e_per + cos_true_anomaly)*q_per_hat_vec[i])
     
-#    v_sq = numpy.sum([x**2 for x in r_dot_per_vec])
-#    r = numpy.sqrt( numpy.sum([x**2 for x in r_per_vec]) )
-#    v_infty = numpy.sqrt( v_sq - 2.0*constants.G*M_tot/r)
     return r_per_vec,r_dot_per_vec
 
 def compute_total_energy(G,m1,m2,m3,R1,V1,R2,V2,R3,V3):
@@ -439,7 +437,6 @@ def integrate_nbody(args):
     
 
     n_per = np.sqrt(G*M_tot/(a_per**3))
-    #a = args.fraction_theta_0*np.arccos(-1.0/e_per)
     
     a = -theta_0
     tend = (1.0/n_per)*( -4*np.arctanh(((-1 + e_per)*np.tan(a/2.))/np.sqrt(-1 + e_per**2)) + (2*e_per*np.sqrt(-1 + e_per**2)*np.sin(a))/(1 + e_per*np.cos(a)) )
@@ -777,8 +774,7 @@ def plot_function_fourier(args,data):
         if index==1:
             plot.set_xlabel(r"$\theta/\mathrm{deg}$",fontsize=fontsize)
         plot.set_ylabel(labels[index],fontsize=fontsize)
-                
-        #plot.tick_params(axis='both', which ='major', labelsize = labelsize)
+
         plot.tick_params(axis='both', which ='major', labelsize = labelsize,bottom=True, top=True, left=True, right=True)
 
         if index in [0]:
@@ -922,6 +918,10 @@ def plot_function_series(args,data_series):
     
     plot1.set_ylim(1.0e-5,1.0e-1)
     plot_c.set_ylim(1.0e-5,1.0e-1)
+    
+    plot1.set_ylim(1.0e-3,1.0e0)
+    plot_c.set_ylim(1.0e-3,1.0e0)
+    
     plots = [plot1,plot2,plot_c]
     for plot in plots:
         plot.set_xlim(0.95*plot_Q_div_a_points[0],1.05*plot_Q_div_a_points[-1])
@@ -933,7 +933,6 @@ def plot_function_series(args,data_series):
             plot.set_xlabel(r"$Q/a$",fontsize=fontsize)
         plot.set_ylabel(labels[index],fontsize=fontsize)
                 
-        #plot.tick_params(axis='both', which ='major', labelsize = labelsize)
         plot.tick_params(axis='both', which ='major', labelsize = labelsize,bottom=True, top=True, left=True, right=True)
 
         if index in [0]:
@@ -941,7 +940,6 @@ def plot_function_series(args,data_series):
 
     plot_c.set_xlabel(r"$Q/a$",fontsize=fontsize)
     plot_c.set_ylabel(labels[0],fontsize=fontsize)
-    #plot_c.tick_params(axis='both', which ='major', labelsize = labelsize)
     plot_c.tick_params(axis='both', which ='major', labelsize = labelsize,bottom=True, top=True, left=True, right=True)
 
     for plot in [plot1,plot_c]:
@@ -1038,7 +1036,6 @@ def plot_function_series_detailed(args,data_series):
             plot.set_xlabel(r"$\theta/\mathrm{deg}$",fontsize=fontsize)
         plot.set_ylabel(labels[index],fontsize=fontsize)
                 
-        #plot.tick_params(axis='both', which ='major', labelsize = labelsize)
         plot.tick_params(axis='both', which ='major', labelsize = labelsize,bottom=True, top=True, left=True, right=True)
 
         if index in [0]:
@@ -1048,7 +1045,7 @@ def plot_function_series_detailed(args,data_series):
     handles,labels = plot1.get_legend_handles_labels()
     plot1.legend(handles,labels,loc="upper left",fontsize=0.6*fontsize)
 
-    plot1.set_title("$E = %s; q = %s; \, \,e=%s;\,i=%s\,\mathrm{deg};\, \omega=%s\,\mathrm{deg};\, \Omega=%s\,\mathrm{deg}$"%(args.e_per,round(args.m1/args.m2,1),args.e,round(args.i*180.0/np.pi,1),round(args.omega*180.0/np.pi,1),round(args.Omega*180.0/np.pi,1)),fontsize=0.65*fontsize)    
+    plot1.set_title("$E = %s; m_1/m_2 = %s; \, \,e=%s;\,i=%s\,\mathrm{deg};\, \omega=%s\,\mathrm{deg};\, \Omega=%s\,\mathrm{deg}$"%(args.e_per,round(args.m1/args.m2,1),args.e,round(args.i*180.0/np.pi,1),round(args.omega*180.0/np.pi,1),round(args.Omega*180.0/np.pi,1)),fontsize=0.65*fontsize)    
     
     
     fig.subplots_adjust(hspace=0.0,wspace=0.0)
@@ -1067,9 +1064,6 @@ def f_TB_e_function(i,omega,Omega):
     return (((3 + Cos(2*i))*Cos(2*Omega) + 2*Sin(i)**2)*Sin(2*omega) + 4*Cos(i)*Cos(2*omega)*Sin(2*Omega))
     
 def plot_function_overview(args):
-
-
-
     m = args.m
     M_per = args.M_per
     m1 = args.m1
@@ -1092,8 +1086,6 @@ def plot_function_overview(args):
     
     N=1000
     e_points = 1.0 - pow(10.0,np.linspace(-6.0,-0.0,N))
-
-    
     
     e_per_values = [1.0,10.0]
     m1_values = [10.0,20.0]
@@ -1104,13 +1096,10 @@ def plot_function_overview(args):
     
     plot_Q_div_a_points = pow(10.0,np.linspace(0.0,np.log10(30.0),N))
 
-    #CONST_G = 4.0*np.pi**2
-    #CONST_C = 63239.72638679138
     CONST_G = args.G
     CONST_C = args.c
     fontsize=args.fontsize
     labelsize=args.labelsize
-    
     
     for index_e_per, e_per in enumerate(e_per_values):
 
@@ -1139,33 +1128,26 @@ def plot_function_overview(args):
             eps_SA_sign_change = -(f/g)
             Q_div_a_sign_change = compute_Q_div_a_from_eps_SA(eps_SA_sign_change,m,M_per,e_per)
             Q_div_a_sign_plateau = pow(2.0,2.0/3.0)*Q_div_a_sign_change
-            #print 'Q_div_a_sign_change',Q_div_a_sign_change
-            #print 'test',eps_SA_sign_change,compute_eps_SA(m,M_per,1.0/Q_div_a_sign_change,e_per)
             
             eps_SA_ome = (-f + np.sqrt(f**2 + 4.0*g*(1.0-e)))/(2.0*g)
-            #print 'test',eps_SA_ome*f+eps_SA_ome**2*g,1.0-e
             Q_div_a_ome = compute_Q_div_a_from_eps_SA(eps_SA_ome,m,M_per,e_per)
             
             Q_div_a_points_sign_change.append(Q_div_a_sign_change)
             Q_div_a_points_sign_plateau.append(Q_div_a_sign_plateau)
             Q_div_a_points_ome.append(Q_div_a_ome)
-    #    Q_div_a_crit_R_unity = pow(0.5,-2.0/3.0)*pow( (1.0 + M_per/m)*(1.0 + e_per), 1.0/3.0)
 
         Q_div_a_points_sign_change = np.array(Q_div_a_points_sign_change)
         Q_div_a_points_sign_plateau = np.array(Q_div_a_points_sign_plateau)
         Q_div_a_points_ome = np.array(Q_div_a_points_ome)
         
         Q_div_a_crit_R_unity = pow(0.5,-2.0/3.0)*pow( (1.0 + M_per/m)*(1.0 + e_per), 1.0/3.0)
-
-
-        
         
         fig=pyplot.figure(figsize=(8,6))
         plot=fig.add_subplot(1,1,1,yscale="log",xscale="log")
 
         w=2.0
-        plot.plot(Q_div_a_points_sign_change,1.0-e_points,color='k',linewidth=1.5*w,label="$\Delta e=0$",zorder=10)
-        plot.plot(Q_div_a_points_sign_plateau,1.0-e_points,color='k',linestyle='dotted',linewidth=1.5*w,label="$\mathrm{Plateau}$",zorder=10)
+        plot.plot(Q_div_a_points_sign_change,1.0-e_points,color='k',linewidth=1.5*w,label="$\Delta e=0$",zorder=10,linestyle='dotted')
+        plot.plot(Q_div_a_points_sign_plateau,1.0-e_points,color='k',linestyle='solid',linewidth=1.5*w,label="$\mathrm{Plateau}$",zorder=10)
         plot.axvline(x=Q_div_a_crit_R_unity,color='g',linestyle='dotted',linewidth=w)
 
         w_values = [0.5,2.0]
@@ -1175,19 +1157,8 @@ def plot_function_overview(args):
             m2 = m2_values[index_m]
             M_per = M_per_values[index_m]
             m=m1+m2    
-        
-
-
-
-            #plot.plot(Q_div_a_points_ome,1.0-e_points,color='k',linestyle='dashed')
-            
-            
 
             for index_system in range(len(a_values)):
-    #        m1 = m1_values[index_system]
-    #        m2 = m2_values[index_system]
-            #M_per = M_per_values[index_system]
-
                 a = a_values[index_system]
                 label1PN = "$a = %s\,\mathrm{AU\,(1PN)}$"%round(a,1)
                 label25PN = "$a = %s\,\mathrm{AU\,(2.5PN)}$"%round(a,1)
@@ -1199,17 +1170,16 @@ def plot_function_overview(args):
                 for index_Q_div_a,Q_div_a in enumerate(plot_Q_div_a_points):
                     rg = CONST_G*m/(CONST_C**2)
                     x = (64.0/np.fabs(f_TB_omega))*(rg/a)*Q_div_a**3*(m/M_per)
-                    #print 'x',x
+
                     e_1PN = np.sqrt(1.0 - pow(x,2.0/3.0))
                     
                     x = (272.0/(9.0*np.fabs(f_TB_e)))*(m/M_per)*(m1*m2/(m**2))*Q_div_a**3*pow(rg/a,5.0/2.0)
                     e_25PN = np.sqrt(1.0 - pow(x,1.0/3.0))
-                    #print 'e_25PN',e_25PN
                    
                     xb = (rg/a)*pow(Q_div_a,3.0/2.0)*np.sqrt(m/(m+M_per))
-                    #xb = 3.0*(rg/a)*Q_div_a**3.0*(m/M_per)
+
                     e_1PNb = np.sqrt(1.0 - xb)
-                    #print Q_div_a,e_1PN
+
                     e_points_1PN.append(e_1PN)
                     e_points_1PNb.append(e_1PNb)
                     e_points_25PN.append(e_25PN)
@@ -1220,7 +1190,6 @@ def plot_function_overview(args):
                 
                 plot.plot(plot_Q_div_a_points,1.0-e_points_1PN,color='r',linestyle=linestyle,linewidth=1.5*w,label=label1PN)
                 plot.plot(plot_Q_div_a_points,1.0-e_points_25PN,color='b',linestyle=linestyle,linewidth=0.75*w,label=label25PN)
-                #plot.plot(plot_Q_div_a_points,1.0-e_points_1PNb,color='r',linestyle='dashed',linewidth=w)
                 
         plot.set_xlim(1.0,25.0)
         plot.set_ylim(1e-6,1e0)
@@ -1228,27 +1197,20 @@ def plot_function_overview(args):
         plot.set_xlabel("$Q/a$",fontsize=fontsize)
         plot.set_ylabel("$1-e$",fontsize=fontsize)
 
-
         w=2.0
                     
-        #plot.tick_params(axis='both', which ='major', labelsize = labelsize)
         plot.tick_params(axis='both', which ='major', labelsize = labelsize,bottom=True, top=True, left=True, right=True)
 
-        #loc = "best"
         loc = "lower left"
         handles,labels = plot.get_legend_handles_labels()
         plot.legend(handles,labels,loc=loc,fontsize=0.6*fontsize)
 
         plot.axhline(y=1.0e-2,color='k',linestyle='dotted',linewidth=w,zorder=0)
-        #plot.set_title("$E = %s; m_1=%s;\,m_2=%s;\,M=%s;\,i=%s\,\mathrm{deg};\, \omega=%s\,\mathrm{deg};\, \Omega=%s\,\mathrm{deg}$"%(args.e_per,round(args.m1),round(args.m2),round(args.M_per),round(args.i*180.0/np.pi,1),round(args.omega*180.0/np.pi,1),round(args.Omega*180.0/np.pi,1)),fontsize=0.65*fontsize)    
-        #plot.set_title("$E = %s; m_1=%s\,\mathrm{M}_\odot;\,m_2=%s\,\mathrm{M}_\odot;\,M=%s\,\mathrm{M}_\odot;\,a = %s\,\mathrm{AU}$"%(args.e_per,round(m1),round(m2),round(M_per),round(a,1)),fontsize=0.65*fontsize)    
-        #plot.set_title("$E = %s; m_1=%s\,\mathrm{M}_\odot;\,m_2=%s\,\mathrm{M}_\odot;\,M=%s\,\mathrm{M}_\odot$"%(e_per,round(m1),round(m2),round(M_per)),fontsize=0.65*fontsize)    
         plot.set_title("$E = %s; \, m_1=m_2=M; \,i=%s\,\mathrm{deg};\, \omega=%s\,\mathrm{deg};\, \Omega=%s\,\mathrm{deg}$"%(e_per,round(args.i*180.0/np.pi,1),round(args.omega*180.0/np.pi,1),round(args.Omega*180.0/np.pi,1)),fontsize=0.65*fontsize)
         
         fig.subplots_adjust(hspace=0.0,wspace=0.0)
         filename = os.path.dirname(os.path.realpath(__file__)) + '/figs/overview_' + str(args.name) + '_e_per_' + str(e_per) + '_m1_' + str(m1) + '_m2_' + str(m2) + '_M_per_' + str(M_per) + '_i_' + str(i) + '.pdf'
         fig.savefig(filename,dpi=200)
-
 
 
         
@@ -1305,7 +1267,7 @@ if __name__ == '__main__':
             
 
         else:
-            'Incorrect plot id'
+            'Incorrect mode'
             exit(-1)
 
 
