@@ -125,7 +125,8 @@ def RHS_function(RHR_vec, theta, *ODE_args):
         djz_dtheta += djz_dtheta_oct
 
 
-    if args.include_1PN_terms == True:
+    #if args.include_1PN_terms == True:
+    if 1==0:
         ### note: not yet working
         e_vec = np.array([ex,ey,ez])
         j_vec = np.array([jx,jy,jz])
