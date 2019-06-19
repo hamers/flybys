@@ -68,9 +68,9 @@ def RHS_function(RHR_vec, theta, *ODE_args):
         eps_1PN = 3.0*(rg/args.a)*np.sqrt( (args.m/(args.m+args.M_per))*(args.Q/args.a)**3*(1.0+e_per)**3)
         de_dtheta = eps_1PN*np.cross(j_vec,e_vec)/(j**3*(1.0+e_per*np.cos(theta))**2)
 	
-		dex_dtheta += de_dtheta[0]
-		dey_dtheta += de_dtheta[1]
-		dez_dtheta += de_dtheta[2]
+        dex_dtheta += de_dtheta[0]
+        dey_dtheta += de_dtheta[1]
+        dez_dtheta += de_dtheta[2]
     
 
     RHR_vec_dot = [dex_dtheta,dey_dtheta,dez_dtheta,djx_dtheta,djy_dtheta,djz_dtheta]

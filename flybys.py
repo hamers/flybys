@@ -85,6 +85,7 @@ def parse_arguments():
     add_bool_arg(parser, 'include_analytic_SO_terms',       default=True,           help="include analytic second-order terms in epsilon_SA")
     add_bool_arg(parser, 'include_analytic_TO_terms',       default=False,          help="include analytic third-order terms in epsilon_SA")
     #add_bool_arg(parser, 'use_c',                           default=False,          help="Use c for analytic functions (implementation needs to be updated)")
+    add_bool_arg(parser, 'include_quadrupole_only_lines',   default=False,          help="Show quadrupole-order only analytic lines (mode 3)")
     add_bool_arg(parser, 'show_inset',                      default=False,          help="Show inset plot (mode 3)")
     
     args = parser.parse_args()
@@ -484,6 +485,8 @@ def plot_function_series(args,data_series):
     Delta_es_SO,Delta_is_SO = [],[]
     Delta_es_TO,Delta_is_TO = [],[]
     
+    Delta_es_SO_no_oct,Delta_is_SO_no_oct = [],[]
+    
     plot_Q_div_a_points = pow(10.0,np.linspace(np.log10(np.amin(Q_div_a_points)),np.log10(np.amax(Q_div_a_points)),2000))
     
     Delta_es_1PN = []
@@ -514,6 +517,15 @@ def plot_function_series(args,data_series):
             Delta_es_TO.append(Delta_e_TO)
             Delta_is_TO.append(Delta_i_TO)
 
+
+        if args.include_quadrupole_only_lines == True:
+            prev = args.include_octupole_terms
+            args.include_octupole_terms = False
+            Delta_e_SO,Delta_i_SO = core.compute_SO_prediction(args,eps_SA,eps_oct,e_per,ex,ey,ez,jx,jy,jz)
+            Delta_es_SO_no_oct.append(Delta_e_SO)
+            Delta_is_SO_no_oct.append(Delta_i_SO)
+            args.include_octupole_terms = prev
+
         g1 = Delta_e_FO/eps_SA
         g2 = (Delta_e_SO-Delta_e_FO)/(eps_SA**2)
     
@@ -536,7 +548,9 @@ def plot_function_series(args,data_series):
     Delta_is_FO = np.array(Delta_is_FO)
     Delta_is_SO = np.array(Delta_is_SO)
     Delta_is_TO = np.array(Delta_is_TO)
-
+    Delta_es_SO_no_oct = np.array(Delta_es_SO_no_oct)
+    Delta_is_SO_no_oct = np.array(Delta_is_SO_no_oct)
+    
     Delta_es_1PN = np.array(Delta_es_1PN)
     
     fontsize=args.fontsize
@@ -601,6 +615,14 @@ def plot_function_series(args,data_series):
             indices_neg = [i for i in range(len(Delta_es_TO)) if Delta_es_TO[i] < 0.0]
             plot.plot(plot_Q_div_a_points[indices_pos],Delta_es_TO[indices_pos],color='b',linestyle='dotted',linewidth=w,label="$\mathrm{TO}$")
             plot.plot(plot_Q_div_a_points[indices_neg],-Delta_es_TO[indices_neg],color='r',linestyle='dotted',linewidth=w)    
+        
+        
+        if args.include_quadrupole_only_lines == True:
+            indices_pos = [i for i in range(len(Delta_es_SO_no_oct)) if Delta_es_SO_no_oct[i] >= 0.0]
+            indices_neg = [i for i in range(len(Delta_es_SO_no_oct)) if Delta_es_SO_no_oct[i] < 0.0]
+            plot.plot(plot_Q_div_a_points[indices_pos],Delta_es_SO_no_oct[indices_pos],color='k',linestyle='dotted',linewidth=w,label="$\mathrm{SO\,(no\,oct)}$")
+            plot.plot(plot_Q_div_a_points[indices_neg],-Delta_es_SO_no_oct[indices_neg],color='k',linestyle='dotted',linewidth=w)    
+            
         
         if len(Delta_es_1PN)>0:
             indices_pos = [i for i in range(len(Delta_es_TO)) if Delta_es_1PN[i] >= 0.0]
@@ -875,7 +897,7 @@ def plot_function_series_PN(args,data_series):
                     plot.axvline(x = Q_div_a_PN2,color='y',linestyle='dashed',linewidth=w)
 
                     Q_div_a_PN3 = pow( (1.0/3.0)*(1.0-args.e**2)*(args.a/rg)*np.sqrt((args.m+args.M_per)/args.m),2.0/3.0)
-                    plot.axvline(x = Q_div_a_PN3,color='g',linestyle='dotted',linewidth=w)
+                    plot.axvline(x = Q_div_a_PN3,color='k',linestyle='dotted',linewidth=w)
                 
                 lw+=0.5
             
