@@ -304,7 +304,7 @@ def integrate_series_PN(args):
         
             Delta_es_AP.append(Delta_e)
             Delta_is_AP.append(Delta_i)
-            print 'index_Q',index_Q,'Delta e',Delta_e
+            print( 'index_Q',index_Q,'Delta e',Delta_e)
         
         if 1==0:
             fig=pyplot.figure()
@@ -348,7 +348,7 @@ def plot_function(args,data):
     Delta_e = data["Delta_e"]
     Delta_i = data["Delta_i"]
     
-    print 'Delta_e',Delta_e
+    print( 'Delta_e',Delta_e)
     fontsize=args.fontsize
     labelsize=args.labelsize
     
@@ -426,7 +426,7 @@ def plot_function_fourier(args,data):
             i = np.arccos(jz/j)
             i_f.append(i)
         
-        print 'Delta_e',Delta_e
+        print( 'Delta_e',Delta_e)
         if index_lmax==0:
             plot1.plot(thetas*180.0/np.pi,e_sol,color='k',label='$\mathrm{SA}$',linestyle='dashed',zorder=10,linewidth=2)
             plot2.plot(thetas*180.0/np.pi,np.array(i_sol)*180.0/np.pi,color='k',linestyle='dashed',zorder=10,linewidth=2)
@@ -1011,7 +1011,7 @@ def plot_function_series_angles(args,data_series_angles):
     i0 = args.i
     AP0 = args.omega
     LAN0 = args.Omega
-    print 'i0',i0,'AP0',AP0,'LAN0',LAN0
+    print( 'i0',i0,'AP0',AP0,'LAN0',LAN0)
     data_points_all = [i_points,AP_points,LAN_points]
     N_p = 2000
     plot_points_all = [np.linspace(0.0,np.pi,N_p),np.linspace(0.0,2.0*np.pi,N_p),np.linspace(0.0,2.0*np.pi,N_p)]
@@ -1456,14 +1456,14 @@ def plot_function_overview(args):
 if __name__ == '__main__':
     args = parse_arguments()
 
-    if args.verbose==True:
-        print 'arguments:'
-        from pprint import pprint
-        pprint(vars(args))
+#    if args.verbose==True:
+#        print 'arguments:'
+#        from pprint import pprint
+#        pprint(vars(args))
 
     if args.plot>0:
         if HAS_MATPLOTLIB == False:
-            print 'Error importing Matplotlib -- choose --plot 0'
+            print( 'Error importing Matplotlib -- choose --plot 0')
             exit(-1)
 
         if args.plot_fancy == True:
@@ -1494,7 +1494,7 @@ if __name__ == '__main__':
                 
         elif args.mode in [3,4]:
             filename = args.series_data_filename
-            print 'filename',filename
+            print( 'filename',filename)
             with open(filename, 'rb') as handle:
                 data_series = pickle.load(handle)
             
@@ -1505,7 +1505,7 @@ if __name__ == '__main__':
 
         elif args.mode in [5]:
             filename = args.series_angles_data_filename
-            print 'filename',filename
+            print( 'filename',filename)
             with open(filename, 'rb') as handle:
                 data_series_angles = pickle.load(handle)
             
@@ -1513,7 +1513,7 @@ if __name__ == '__main__':
 
         elif args.mode in [6]:
             filename = args.series_PN_data_filename
-            print 'filename',filename
+            print( 'filename',filename)
             with open(filename, 'rb') as handle:
                 data_series_PN = pickle.load(handle)
             

@@ -272,7 +272,7 @@ def integrate(args):
         rg = args.G*m/(args.c**2)
         omega_dot_1PN = 3.0*n_bin*(rg/a)*1.0/(1.0-e**2)
         Delta_omega = omega_dot_1PN*Delta_t/2.0
-        print 'Delta_omega',Delta_omega,'Delta_t',Delta_t
+        print( 'Delta_omega',Delta_omega,'Delta_t',Delta_t)
         omega += omega_dot_1PN
     
     ex,ey,ez,jx,jy,jz = orbital_elements_to_orbital_vectors(e,i,omega,Omega)
@@ -286,8 +286,8 @@ def integrate(args):
     RHR_vec = [ex,ey,ez,jx,jy,jz]
         
     if args.verbose==True:
-        print 'eps_SA',eps_SA
-        print 'RHR_vec',RHR_vec
+        print( 'eps_SA',eps_SA)
+        print( 'RHR_vec',RHR_vec)
     
     ### numerical solution ###
     sol = odeint(RHS_function, RHR_vec, thetas, args=ODE_args,mxstep=args.mxstep,rtol=1.0e-15,atol=1e-12)
@@ -316,9 +316,9 @@ def integrate(args):
     nbody_a_sol,nbody_e_sol,nbody_i_sol,nbody_Delta_a,nbody_Delta_e,nbody_Delta_i,nbody_energy_errors_sol = None,None,None,None,None,None,None
     if args.do_nbody==True:
         nbody_a_sol,nbody_e_sol,nbody_i_sol,nbody_Delta_a,nbody_Delta_e,nbody_Delta_i,nbody_energy_errors_sol = integrate_nbody(args)
-        print 'Q/a',args.Q/args.a
-        print 'SA Delta e',Delta_e,'Delta i',Delta_i
-        print 'nbody Delta e',nbody_Delta_e,'Delta i',nbody_Delta_i,'nbody energy error',nbody_energy_errors_sol[-1]
+        print( 'Q/a',args.Q/args.a)
+        print( 'SA Delta e',Delta_e,'Delta i',Delta_i)
+        print( 'nbody Delta e',nbody_Delta_e,'Delta i',nbody_Delta_i,'nbody energy error',nbody_energy_errors_sol[-1])
 
     data = {'thetas': thetas,'ex_sol':ex_sol,'ey_sol':ey_sol,'ez_sol':ez_sol, \
         'jx_sol':jx_sol,'jy_sol':jy_sol,'jz_sol':jz_sol,'e_sol':e_sol,'j_sol':j_sol,'i_sol':i_sol, \
@@ -402,8 +402,8 @@ def integrate_nbody(args):
     RHR_vec = [R1[0],R1[1],R1[2],V1[0],V1[1],V1[2],R2[0],R2[1],R2[2],V2[0],V2[1],V2[2],R3[0],R3[1],R3[2],V3[0],V3[1],V3[2]]
 
     if args.verbose==True:
-        print 'eps_SA',eps_SA
-        print 'RHR_vec',RHR_vec
+        print( 'eps_SA',eps_SA)
+        print( 'RHR_vec',RHR_vec)
     
     ### numerical solution ###
     sol = odeint(RHS_function_nbody, RHR_vec, times, args=ODE_args,mxstep=args.mxstep,rtol=1.0e-15)
