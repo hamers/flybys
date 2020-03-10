@@ -40,7 +40,7 @@ def add_bool_arg(parser, name, default=False,help=None):
 def parse_arguments():
     
 
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     parser.add_argument("--mode",                           type=float,     dest="mode",                        default=1,              help="mode -- 1: single integration; 2: single integration (illustrating Fourier series); 3: series integration; 4: series integration (with detailed time plots); 5: series integration (with different orbital angles); 6: series integration (in the context of 1PN terms); 7: make overview plot of importance of SO terms.")
     parser.add_argument("--name",                           type=str,       dest="name",                        default="test01",       help="name")
